@@ -1,0 +1,230 @@
+# Testing and CI
+
+This document describes the testing and continuous-integration strategy
+for `tympan-aspl`, including what can be verified automatically on
+GitHub-hosted runners, what requires manual or self-hosted execution,
+and the constraints imposed by macOS itself.
+
+## Tiered verification strategy
+
+Verification is organised in four tiers by depth and environment
+requirements. Each tier subsumes the previous one. Lower tiers run on
+every pull request; higher tiers run on schedule or on demand.
+
+### Tier 1: Static and unit verification
+
+Standard Rust toolchain checks runnable on any macOS-hosted runner.
+
+| Check | Command | Purpose |
+|---|---|---|
+| Build | `cargo build --all-targets` | Compilation across all crate features |
+| Test | `cargo test` | Unit tests for logic that does not require HAL |
+| Lint | `cargo clippy --all-targets -- -D warnings` | Including project-specific realtime-safety lints |
+| Format | `cargo fmt --check` | Style consistency |
+| Doc | `cargo doc --no-deps --document-private-items` | Documentation coverage and rustdoc errors |
+
+Required on every pull request. Total time: 5-10 minutes on `macos-14`
+or `macos-15` runners.
+
+### Tier 2: Bundle and ABI verification
+
+Verify that the built `.driver` bundle has the structural properties
+required by CoreAudio to be a loadable AudioServerPlugin.
+
+| Check | Tool | Purpose |
+|---|---|---|
+| Bundle layout | `plutil -lint Info.plist` | Info.plist syntax and required keys |
+| Symbol visibility | `nm -gU` | Only the entry-point symbol is exported |
+| Architecture coverage | `lipo -info` | Universal binary or arm64-only as configured |
+| Code signing (ad-hoc) | `codesign -v` | Ad-hoc signature applied during build |
+| ABI sizes | Compile-time `static_assertions` | Bridged struct sizes match the C definitions |
+
+The ABI size check uses `static_assertions::assert_eq_size!` against
+the `coreaudio-sys`-generated types, catching layout drift before
+runtime.
+
+Runs on every pull request once a buildable `.driver` example exists.
+
+### Tier 3: HAL load verification
+
+Place the built `.driver` bundle into the HAL plugin directory and
+verify that `coreaudiod` enumerates it.
+
+Sequence:
+
+1. `sudo cp -R target/release/example.driver /Library/Audio/Plug-Ins/HAL/`
+2. `sudo launchctl kill KILL system/com.apple.audio.coreaudiod`
+3. Wait briefly for `coreaudiod` to relaunch automatically
+4. `system_profiler SPAudioDataType | grep <device-name>` should show
+   the example device
+
+GitHub-hosted runners support all of these steps:
+
+- `sudo` is available without a password
+- HAL plugin loading is not blocked by SIP (only debugger attachment is)
+- Ad-hoc signing is sufficient for `coreaudiod` to load the plugin
+
+Runs on every merge to `main` and on a daily schedule.
+
+### Tier 4: Audio I/O verification
+
+Actual audio data flow through the plugin. Out of scope for standard
+GitHub-hosted runners because the runners lack physical or virtual
+audio hardware exposed to applications. Performed via:
+
+- Developer's local machine during PR review
+- A self-hosted runner on a developer Mac registered with GitHub
+  Actions
+- macOS-in-cloud services (MacStadium, MacinCloud, AWS mac.metal)
+  when funded
+
+## GitHub-hosted macOS runners
+
+Current runners (as of April 2026):
+
+| Label | OS | Architecture | Specs | Public-repo cost |
+|---|---|---|---|---|
+| `macos-15` / `macos-latest` | Sequoia | Apple Silicon (M1) | 3 vCPU, 7 GB RAM, 14 GB disk | Free |
+| `macos-14` | Sonoma | Apple Silicon (M1) | Same | Free |
+| `macos-13` | Ventura | Intel x86_64 | Same | Free |
+| `macos-14-xlarge` / `macos-15-xlarge` | Sequoia / Sonoma | M2 Pro | 5 vCPU, 14 GB RAM | Paid only ($0.16/min) |
+
+Public repositories receive unlimited free minutes on standard runners
+across all GitHub plans. For private forks or downstream consumers,
+macOS runners cost $0.048/min after the January 2026 price reduction;
+the free monthly quota of 2,000 Linux-equivalent minutes converts to
+~200 macOS minutes per month on private repositories.
+
+`tympan-aspl` is a public repository, so standard runner usage is
+unconstrained by cost.
+
+### Runner image inventory
+
+GitHub publishes per-image software inventories for each runner. The
+images relevant to AudioServerPlugin development include:
+
+- Xcode Command Line Tools and full Xcode installations
+- `clang`, `lipo`, `codesign`, `plutil`, `nm`, `otool`, `dyld_info`
+- `system_profiler`, `launchctl`, `audio_*` introspection utilities
+
+No additional Apple Developer Program enrolment is required for
+ad-hoc signing.
+
+## System Integrity Protection (SIP) considerations
+
+SIP is active by default on GitHub-hosted runners and cannot be
+disabled (`csrutil disable` requires Recovery Mode). The implications
+for AudioServerPlugin testing:
+
+| Operation | Allowed under SIP | Notes |
+|---|---|---|
+| Place `.driver` in `/Library/Audio/Plug-Ins/HAL/` | Yes | Requires `sudo`, which runners provide |
+| Restart `coreaudiod` | Yes | Via `launchctl kill` |
+| `coreaudiod` loads unsigned plugin | Yes | HAL plugins are not subject to kernel signature requirements |
+| Attach `lldb` to `coreaudiod` | No | SIP blocks debugger attachment to system daemons |
+| Audio device enumeration | Yes | Standard HAL client API |
+| Modify SIP itself | No | Recovery Mode only |
+| Run a private `coreaudiod` instance | Partially | Works but with reduced functionality |
+
+Key observation: **SIP does not prevent loading unsigned HAL plugins**.
+It prevents debugger attachment to `coreaudiod`, which affects
+*debugging* but not *running*. Tier 3 verification works on stock
+runners; deep debugging of issues encountered in CI requires a local
+machine with SIP partially disabled via undocumented `csrutil`
+options.
+
+## What cannot be verified on GitHub-hosted runners
+
+Hard limits of the standard runner environment:
+
+- **Audio output to physical speakers** — runners have no audio output
+  hardware exposed to applications
+- **Microphone capture** — runners have no input devices
+- **Long-running stability** — jobs time out at 6 hours; realistic
+  stability tests run for days or weeks
+- **Notarization-gated behaviour** — notarization requires an Apple
+  Developer Program account and submission to Apple's servers; CI
+  cannot meaningfully perform this on every commit
+- **Third-party audio application interaction** — DAWs, conferencing
+  apps, and similar tools are not installed and cannot be reliably
+  driven headlessly
+- **System Settings UI verification** — confirming that a device
+  appears in System Settings > Sound requires a logged-in UI session,
+  which runners do not provide reliably
+
+These gaps motivate the tier 4 manual / self-hosted verification step.
+
+## Self-hosted alternatives
+
+When automated tier 4 verification is required, options include:
+
+### Self-hosted GitHub Actions runner
+
+A developer's Mac registered as a GitHub Actions runner. Cost-effective
+for solo development; requires the machine to be powered on and
+networked when CI runs.
+
+Public repositories incur no platform fee for self-hosted runners.
+Private repositories pay a $0.002/min platform fee starting March 2026.
+
+Steps to register:
+
+1. Settings > Actions > Runners > New self-hosted runner
+2. Follow the printed installation script on the target Mac
+3. Optionally configure the runner as a launch agent for auto-start
+
+### macOS-in-cloud services
+
+| Service | Model | Approximate cost | When useful |
+|---|---|---|---|
+| MacStadium | Dedicated Mac mini, monthly | $80-200/mo | Persistent state, full control |
+| MacinCloud | Shared and dedicated, hourly | $1-3/hr | Ad-hoc verification |
+| AWS EC2 mac.metal | Bare metal, 24-hour minimum | ~$25/day | Brief intensive campaigns |
+| Xcode Cloud | Apple's CI for Xcode projects | Included with Developer Program | iOS/macOS app CI; not ideal for libraries |
+
+These services are appropriate when tier 4 verification must run
+automatically as part of pipelines, and a local developer machine is
+insufficient (e.g., for release validation).
+
+## Recommended workflow files
+
+The intended `.github/workflows/` layout once implementation begins:
+
+```
+.github/workflows/
+├── tier1.yml           # cargo build/test/clippy/fmt/doc on every PR
+├── tier2.yml           # bundle and ABI verification on every PR
+├── tier3.yml           # HAL load verification on merge to main + nightly
+└── release.yml         # Tagged release publishing (cargo publish dry-run)
+```
+
+Tier 4 is intentionally omitted from the workflow set; it is performed
+manually or on a self-hosted runner outside the standard pipeline.
+
+## Realtime safety enforcement in CI
+
+In addition to the lints provided by Clippy, the framework will define
+a set of project-specific lints that fail CI when realtime-unsafe
+patterns appear in the realtime code paths:
+
+- Allocation calls within functions reachable from `IOProc`
+- `std::sync::Mutex` use within realtime modules
+- Blocking system calls (e.g., file I/O, network) in realtime code
+
+These lints will be enforced via:
+
+- A custom `cargo clippy` configuration (`clippy.toml`) restricting
+  the realtime module's allowed dependencies
+- `cargo-deny` rules preventing accidental introduction of
+  realtime-unsafe transitive dependencies
+- Compile-time `#[deny(...)]` directives in module-level attributes
+
+Implementation details will be added once the first realtime module
+lands.
+
+## Implementation status
+
+CI is not yet configured. Implementation is planned at the same time
+as the first source code is committed. The initial CI configuration
+will cover tiers 1 and 2; tier 3 will be added once the first example
+plugin is buildable; tier 4 remains manual indefinitely.
