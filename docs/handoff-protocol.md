@@ -1,3 +1,5 @@
+English | [日本語](ja/handoff-protocol.md)
+
 # Session Handoff Protocol
 
 Protocol for handing off long-running work between Claude sessions via

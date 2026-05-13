@@ -1,3 +1,5 @@
+English | [日本語](ja/architecture.md)
+
 # Architecture
 
 This document describes the planned architecture. Implementation has not
