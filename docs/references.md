@@ -1,3 +1,5 @@
+English | [日本語](ja/references.md)
+
 # References
 
 Reference material consulted during design.

@@ -1,3 +1,5 @@
+English | [日本語](ja/testing.md)
+
 # Testing and CI
 
 This document describes the testing and continuous-integration strategy
