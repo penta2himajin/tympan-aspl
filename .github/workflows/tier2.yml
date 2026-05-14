@@ -43,7 +43,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: tier2
+          # `tier2-v2`: the original `tier2` cache was poisoned with a
+          # stale `.cargo/bin` that shadowed the toolchain's `cargo`
+          # (a `cargo run` resolved to `rustup-init`). `cache-bin:
+          # false` stops caching `${CARGO_HOME}/bin` so the toolchain
+          # `dtolnay/rust-toolchain` installs each run is never
+          # overwritten by a cache restore.
+          shared-key: tier2-v2
+          cache-bin: false
 
       - name: plutil -lint committed Info.plist fixtures
         run: |
