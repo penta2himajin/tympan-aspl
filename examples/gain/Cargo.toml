@@ -18,5 +18,13 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 tympan-aspl = { path = "../.." }
 
+[dev-dependencies]
+# `tests/no_alloc.rs` installs `AllocDisabler` as the test binary's
+# global allocator to prove this example's `process_io` is
+# allocation-free. `default-features = false` switches off the
+# `disable_release` feature so the guard stays armed when Tier 1's
+# `cargo build --release --all-targets` compiles the test target.
+assert_no_alloc = { version = "1.1", default-features = false }
+
 [lints]
 workspace = true
