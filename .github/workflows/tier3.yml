@@ -1,0 +1,107 @@
+name: Tier 3
+
+# `coreaudiod` HAL-load verification per
+# docs/decisions/0001-ci-verification-strategy.md § Tier 3.
+#
+# Runs on merges to main, on a daily schedule, and on manual
+# dispatch — deliberately NOT on pull requests. Per ADR 0001 this
+# tier does not gate PR merge: a failure on `main` is a signal to
+# investigate, not a block.
+#
+# It builds the example `.driver`, installs it into the HAL plug-in
+# directory, restarts `coreaudiod`, and confirms the virtual device
+# is enumerated — an end-to-end proof that the `raw` ABI layer (the
+# CFPlugIn vtable, the struct layouts, the property entry points)
+# is correct against the real Core Audio C ABI.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 07:00 UTC daily.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tier3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  tier3:
+    name: coreaudiod HAL load (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # `cache-bin: false` per the Tier 1/2 cache footgun — see
+          # those workflows.
+          shared-key: tier3-v2
+          cache-bin: false
+
+      - name: Build the minimal-loopback cdylib (release)
+        run: cargo build --release -p minimal-loopback
+
+      - name: Assemble and ad-hoc sign MinimalLoopback.driver
+        run: |
+          set -euo pipefail
+          BUNDLE=MinimalLoopback.driver
+          mkdir -p "$BUNDLE/Contents/MacOS"
+          cp examples/minimal-loopback/Info.plist "$BUNDLE/Contents/Info.plist"
+          cp target/release/libminimal_loopback.dylib "$BUNDLE/Contents/MacOS/MinimalLoopback"
+          codesign --force --sign - --timestamp=none "$BUNDLE"
+          codesign --verify --verbose "$BUNDLE"
+          find "$BUNDLE" -print
+
+      - name: Install the bundle into the HAL plug-in directory
+        # `/Library/Audio/Plug-Ins/HAL/` is the directory `coreaudiod`
+        # scans for AudioServerPlugins. SIP permits the copy (with
+        # `sudo`, which the runner provides) and permits `coreaudiod`
+        # to load an ad-hoc-signed plug-in.
+        run: sudo cp -R MinimalLoopback.driver /Library/Audio/Plug-Ins/HAL/
+
+      - name: Restart coreaudiod
+        run: |
+          set -euo pipefail
+          # `coreaudiod` is a launchd-managed system daemon; killing
+          # it makes launchd relaunch it, and the fresh process scans
+          # the HAL plug-in directory.
+          sudo launchctl kill KILL system/com.apple.audio.coreaudiod || true
+          sleep 5
+
+      - name: coreaudiod enumerates the virtual device
+        # `system_profiler SPAudioDataType` lists every audio device
+        # the HAL knows about. The virtual device showing up proves
+        # `coreaudiod` loaded the plug-in and the property entry
+        # points answered the device-tree queries correctly.
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if system_profiler SPAudioDataType | grep -q "Minimal Loopback"; then
+              echo "coreaudiod enumerated the Minimal Loopback device:"
+              system_profiler SPAudioDataType | grep -A 6 "Minimal Loopback"
+              exit 0
+            fi
+            echo "attempt ${attempt}/12: device not yet visible, waiting…"
+            sleep 5
+          done
+          echo "::error::coreaudiod did not enumerate the Minimal Loopback device"
+          echo "--- full SPAudioDataType output ---"
+          system_profiler SPAudioDataType || true
+          exit 1

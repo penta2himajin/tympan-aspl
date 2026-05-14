@@ -70,16 +70,21 @@ Tier 1 plus:
 
 - `plutil -lint` over committed `Info.plist` fixtures and over
   Info.plists emitted by the `bundle` module
-- `nm -gU` symbol-visibility check once the example builds a
-  `.driver` bundle — only the CFPlugIn factory symbol is exported
+- `nm -gU` symbol-visibility check — the CFPlugIn factory symbol is
+  exported, unmangled
 - `lipo -info` architecture-coverage check
-- `codesign -v` ad-hoc signature verification
-- Compile-time `static_assertions` for bridged struct sizes against
-  the `coreaudio-sys` C definitions
+- `codesign` ad-hoc signature + `codesign --verify` over the
+  assembled `.driver` bundle
 
-This tier blocks merge. **Wired up: partially** (`tier2.yml`,
-`plutil -lint` over the example Info.plist; the symbol / `lipo` /
-`codesign` steps land with the first buildable `.driver`).
+The bridged struct layouts are checked for internal consistency by
+the `static_assertions` in `raw::abi`, and proven end-to-end
+against the real Core Audio C ABI by Tier 3's HAL load (a plug-in
+with a wrong vtable or struct layout does not enumerate). A
+`coreaudio-sys` `assert_eq_size!` cross-check was considered;
+`coreaudio-sys`'s coverage of `<CoreAudio/AudioServerPlugIn.h>` is
+not relied upon, and the Tier 3 round-trip is the stronger check.
+
+This tier blocks merge. **Wired up: yes** (`tier2.yml`).
 
 ### Tier 3 — `hal-load` (merge to `main` and nightly, target < 25 min)
 
@@ -89,12 +94,15 @@ Tier 2 plus:
 - `sudo launchctl kill` `coreaudiod` and wait for relaunch
 - `system_profiler SPAudioDataType` confirms the example device is
   enumerated
-- An in-process lifecycle harness driving
-  `Initialize → StartIO → IOProc ×N → StopIO` under an
-  `assert_no_alloc` global-allocator guard
 
-This tier does not block PR merge; failure on `main` opens an issue.
-**Wired up: no** (lands with the first buildable `.driver`).
+An in-process lifecycle harness driving the IO path under an
+`assert_no_alloc` global-allocator guard is a planned addition; the
+HAL-load check above is the headline Tier 3 verification.
+
+This tier does not block PR merge — `tier3.yml` runs on merges to
+`main`, a daily schedule, and manual dispatch, never on a pull
+request. A failure on `main` is a signal to investigate.
+**Wired up: yes** (`tier3.yml`).
 
 ### Tier 4 — out of CI scope
 
