@@ -4,11 +4,10 @@ name: Tier 2
 # docs/decisions/0001-ci-verification-strategy.md § Tier 2.
 # Runs on every pull request and every push to main.
 #
-# Wired up so far: `plutil -lint` over the committed example
-# Info.plist and over an Info.plist emitted by the `bundle` module.
-# The `nm -gU` symbol-visibility, `lipo -info`, and `codesign -v`
-# steps land alongside the first buildable `.driver` bundle, per the
-# ADR. Until then this workflow keeps the bundle fixtures honest.
+# Verifies: the committed and generated Info.plists are well-formed;
+# the example builds as a loadable `.driver` cdylib that exports the
+# CFPlugIn factory symbol unmangled; the assembled `.driver` bundle
+# ad-hoc code-signs and verifies.
 
 on:
   pull_request:
@@ -29,9 +28,9 @@ env:
 
 jobs:
   tier2:
-    name: Bundle Info.plist verification (macos-15)
+    name: Bundle + ABI verification (macos-15)
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -66,3 +65,45 @@ jobs:
           cargo run --quiet --example print-info-plist > generated-Info.plist
           plutil -lint generated-Info.plist
           cat generated-Info.plist
+
+      - name: Build the minimal-loopback cdylib (release)
+        run: cargo build --release -p minimal-loopback
+
+      - name: nm — the CFPlugIn factory symbol is exported, unmangled
+        # `coreaudiod` resolves `TympanAsplDriverFactory` from the
+        # bundle's Info.plist; the macOS symbol carries a leading
+        # underscore. `nm -gU` lists external defined symbols.
+        run: |
+          set -euo pipefail
+          DYLIB=target/release/libminimal_loopback.dylib
+          nm -gU "$DYLIB" | tee /tmp/symbols.txt
+          if ! grep -qE '(^| )_TympanAsplDriverFactory$' /tmp/symbols.txt; then
+            echo "::error::_TympanAsplDriverFactory not exported by $DYLIB"
+            exit 1
+          fi
+          echo "CFPlugIn factory symbol present and unmangled."
+
+      - name: lipo — report the cdylib's architecture coverage
+        run: lipo -info target/release/libminimal_loopback.dylib
+
+      - name: Assemble the MinimalLoopback.driver bundle
+        # The loadable bundle is the committed Info.plist plus the
+        # built cdylib, in the CFBundle layout `coreaudiod` expects.
+        run: |
+          set -euo pipefail
+          BUNDLE=MinimalLoopback.driver
+          mkdir -p "$BUNDLE/Contents/MacOS"
+          cp examples/minimal-loopback/Info.plist "$BUNDLE/Contents/Info.plist"
+          cp target/release/libminimal_loopback.dylib "$BUNDLE/Contents/MacOS/MinimalLoopback"
+          plutil -lint "$BUNDLE/Contents/Info.plist"
+          find "$BUNDLE" -print
+
+      - name: codesign — ad-hoc sign the bundle and verify
+        # An ad-hoc signature (`-`) is enough for `coreaudiod` to load
+        # a HAL plug-in on a SIP-enabled host; this exercises the
+        # signing wiring without a Developer ID certificate.
+        run: |
+          set -euo pipefail
+          codesign --force --sign - --timestamp=none MinimalLoopback.driver
+          codesign --verify --verbose MinimalLoopback.driver
+          echo "Bundle ad-hoc signed and verified."

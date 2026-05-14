@@ -16,45 +16,54 @@ it — the macOS analogue of `tympan-apo`'s `passthrough` example.
 - A realtime-safe `process_io` body — a single `copy_from_slice`,
   with no allocation and no locks.
 
-## Status
+## Building
 
-This crate is an `rlib` today. The cross-platform `Driver`
-implementation in `src/lib.rs` builds and is unit-tested on every
-host:
+The crate builds two ways. As an `rlib`, its `Driver` implementation
+is unit-tested on every host:
 
 ```bash
 cargo test -p minimal-loopback
 ```
 
-Producing the loadable `MinimalLoopback.driver` bundle needs the
-`raw` FFI bridge, which lands in a follow-up PR per
-[`docs/decisions/0001-ci-verification-strategy.md`](../../docs/decisions/0001-ci-verification-strategy.md).
-When it does, two changes turn this crate into a bundle:
+As a `cdylib`, it is the loadable plug-in binary —
+`tympan_aspl::plugin_entry!` emits the `TympanAsplDriverFactory`
+CFPlugIn entry point `coreaudiod` resolves:
 
-1. switch `crate-type` to `["cdylib"]` in `Cargo.toml`, and
-2. add `tympan_aspl::plugin_entry!(MinimalLoopback);` at the crate
-   root to emit the CFPlugIn factory symbol.
+```bash
+cargo build --release -p minimal-loopback
+# → target/release/libminimal_loopback.dylib
+```
 
 ## The bundle layout
 
-`Info.plist` in this directory already describes the intended
-bundle. Tier 2 CI `plutil`-lints it, and it is exactly what
-`tympan_aspl::bundle::plist::generate` emits for this driver's
-[`BundleConfig`] — see the `print-info-plist` example at the
-repository root.
+The loadable `MinimalLoopback.driver` bundle is the committed
+`Info.plist` plus the built cdylib, in the CFBundle layout
+`coreaudiod` expects:
 
 ```text
 MinimalLoopback.driver/
 └── Contents/
     ├── Info.plist          ← the file in this directory
     └── MacOS/
-        └── MinimalLoopback ← the cdylib, once raw FFI lands
+        └── MinimalLoopback ← the built cdylib
 ```
 
-Once built, the bundle installs into the HAL plug-in directory:
+`Info.plist` is exactly what `tympan_aspl::bundle::plist::generate`
+emits for this driver's [`BundleConfig`] — see the `print-info-plist`
+example at the repository root. Tier 2 CI assembles the bundle,
+`plutil`-lints the plist, `nm`-checks the factory symbol, and ad-hoc
+code-signs it.
+
+To assemble and install the bundle by hand:
 
 ```bash
-sudo cp -R MinimalLoopback.driver /Library/Audio/Plug-Ins/HAL/
+BUNDLE=MinimalLoopback.driver
+mkdir -p "$BUNDLE/Contents/MacOS"
+cp examples/minimal-loopback/Info.plist "$BUNDLE/Contents/Info.plist"
+cp target/release/libminimal_loopback.dylib "$BUNDLE/Contents/MacOS/MinimalLoopback"
+codesign --force --sign - "$BUNDLE"
+
+sudo cp -R "$BUNDLE" /Library/Audio/Plug-Ins/HAL/
 sudo killall coreaudiod
 ```
 
