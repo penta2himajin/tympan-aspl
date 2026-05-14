@@ -11,9 +11,18 @@ writing C++ or Objective-C.
 
 ## Status
 
-**Design phase.** No implementation yet. See [`docs/overview.md`](docs/overview.md)
-for planned scope and [`docs/architecture.md`](docs/architecture.md) for the
-planned API design.
+**Early implementation.** The cross-platform foundation has landed: the
+realtime primitives (`RealtimeContext`, lock-free SPSC ring, atomic
+lifecycle state machine, off-thread log sink), the Core Audio object
+model (`OsStatus`, `FourCharCode`, `AudioObjectId`, `PropertyAddress`,
+`StreamFormat`), the `Driver` / `Device` / `Stream` API surface, and
+`.driver` bundle `Info.plist` generation — all unit-tested and CI-gated.
+
+The macOS FFI bridge (`raw`) and the `coreaudiod` HAL-load test tiers
+are next; see
+[`docs/decisions/0001-ci-verification-strategy.md`](docs/decisions/0001-ci-verification-strategy.md).
+See [`docs/overview.md`](docs/overview.md) for scope and
+[`docs/architecture.md`](docs/architecture.md) for the API design.
 
 ## Naming
 

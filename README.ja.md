@@ -10,9 +10,18 @@ Rust の抽象化を提供し、C++ や Objective-C を書くことなく、Rust
 
 ## ステータス
 
-**設計フェーズ。** 実装はまだ存在しません。計画中のスコープは
-[`docs/ja/overview.md`](docs/ja/overview.md) を、API 設計は
-[`docs/ja/architecture.md`](docs/ja/architecture.md) を参照してください。
+**実装初期段階。** クロスプラットフォームな基盤部分が着地しました。リアルタイム
+プリミティブ（`RealtimeContext`、ロックフリー SPSC リングバッファ、アトミックな
+ライフサイクル状態機械、別スレッドのログシンク）、Core Audio オブジェクトモデル
+（`OsStatus`、`FourCharCode`、`AudioObjectId`、`PropertyAddress`、`StreamFormat`）、
+`Driver` / `Device` / `Stream` の API サーフェス、`.driver` バンドルの `Info.plist`
+生成 — いずれもユニットテストと CI で検証されています。
+
+macOS の FFI ブリッジ（`raw`）と `coreaudiod` への HAL ロードテスト階層が次の段階
+です。詳細は
+[`docs/decisions/0001-ci-verification-strategy.md`](docs/decisions/0001-ci-verification-strategy.md)
+を参照してください。スコープは [`docs/ja/overview.md`](docs/ja/overview.md) を、
+API 設計は [`docs/ja/architecture.md`](docs/ja/architecture.md) を参照してください。
 
 ## 名前について
 

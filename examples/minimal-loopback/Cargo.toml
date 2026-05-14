@@ -1,0 +1,22 @@
+[package]
+name = "minimal-loopback"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "Reference AudioServerPlugin: a stereo virtual loopback device"
+publish = false
+
+# An rlib for now: the cross-platform `Driver` implementation builds
+# and is unit-tested on every host. The `.driver` cdylib — produced
+# by adding `cdylib` here and a `plugin_entry!` invocation — lands
+# together with the `raw` FFI bridge, per docs/decisions/0001. The
+# committed `Info.plist` already describes the intended bundle.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+tympan-aspl = { path = "../.." }
+
+[lints]
+workspace = true
