@@ -27,6 +27,9 @@
 //! - The object model — [`error`], [`fourcc`], [`object`],
 //!   [`property`], [`mod@format`], [`io`] — cross-platform
 //!   plain-data mirrors of the Core Audio C types.
+//! - The property protocol — [`objects`] (the object tree) and
+//!   [`dispatch`] (the cross-platform answer to the HAL's property
+//!   reads).
 //! - The public API — [`driver`], [`device`], [`stream`] — the
 //!   traits and declarative types a consumer implements against.
 //! - [`bundle`] — `.driver` bundle `Info.plist` generation.
@@ -50,12 +53,14 @@
 
 pub mod bundle;
 pub mod device;
+pub mod dispatch;
 pub mod driver;
 pub mod error;
 pub mod format;
 pub mod fourcc;
 pub mod io;
 pub mod object;
+pub mod objects;
 pub mod property;
 pub mod realtime;
 pub mod stream;
@@ -71,12 +76,16 @@ mod macros;
 
 pub use bundle::BundleConfig;
 pub use device::{Device, DeviceId, DeviceSpec};
+pub use dispatch::DeviceState;
 pub use driver::{AnyDriver, Driver, DriverInfo};
 pub use error::OsStatus;
 pub use format::{FormatNegotiation, SampleFormat, StreamFormat};
 pub use fourcc::FourCharCode;
 pub use io::{IoBuffer, IoOperation, Sample, Timestamp};
 pub use object::{AudioObjectId, ObjectKind};
-pub use property::{PropertyAddress, PropertyElement, PropertyScope, PropertySelector};
+pub use objects::{Object, ObjectMap};
+pub use property::{
+    PropertyAddress, PropertyElement, PropertyScope, PropertySelector, PropertyValue, ValueRange,
+};
 pub use realtime::RealtimeContext;
 pub use stream::{StreamDirection, StreamSpec};
