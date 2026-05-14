@@ -35,14 +35,29 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::dispatch;
 use crate::error::OsStatus;
+use crate::fourcc::FourCharCode;
+use crate::io::{IoBuffer, IoOperation};
 use crate::object::AudioObjectId;
 use crate::raw::abi::{
     AudioObjectID, AudioObjectPropertyAddress, AudioServerPlugInDriverRef,
-    AudioServerPlugInHostRef, Boolean, CFUUIDBytes, OSStatus, UInt32,
+    AudioServerPlugInHostRef, AudioServerPlugInIOCycleInfo, Boolean, CFUUIDBytes, OSStatus, UInt32,
 };
 use crate::raw::marshal;
 use crate::raw::platform;
 use crate::raw::runtime::DriverObject;
+use crate::realtime::RealtimeContext;
+
+/// The largest IO cycle, in interleaved `f32` samples, that
+/// [`do_io_operation`] services without heap allocation.
+///
+/// The entry point bridges the HAL's buffer and the device ring
+/// through a fixed stack scratch buffer of this size — `8192`
+/// samples is `1024` frames of 8-channel audio, or `4096` frames of
+/// stereo, comfortably above the HAL's usual `512`–`1024`-frame
+/// cycles. A cycle larger than this is reported as
+/// [`OsStatus::UNSPECIFIED`] rather than allocating on the realtime
+/// thread.
+const MAX_CYCLE_SAMPLES: usize = 8192;
 
 /// `IUnknownUUID` — `{00000000-0000-0000-C000-000000000046}`. The
 /// base COM interface every CFPlugIn interface also satisfies.
@@ -150,6 +165,40 @@ unsafe fn in_slice<'a>(ptr: *const c_void, len: UInt32) -> &'a [u8] {
     }
     // Safety: forwarded from the caller's contract.
     unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) }
+}
+
+/// Borrow a HAL IO buffer as a `&[f32]` of `count` interleaved
+/// samples.
+///
+/// # Safety
+///
+/// `ptr` must be null or point to at least `count` readable,
+/// `f32`-aligned samples; the HAL upholds this for the IO buffers
+/// it passes to `DoIOOperation`. A null pointer or zero count
+/// yields an empty slice.
+unsafe fn in_samples<'a>(ptr: *const c_void, count: usize) -> &'a [f32] {
+    if ptr.is_null() || count == 0 {
+        return &[];
+    }
+    // Safety: forwarded from the caller's contract.
+    unsafe { core::slice::from_raw_parts(ptr.cast::<f32>(), count) }
+}
+
+/// Borrow a HAL IO buffer as a `&mut [f32]` of `count` interleaved
+/// samples.
+///
+/// # Safety
+///
+/// `ptr` must be null or point to at least `count` writable,
+/// `f32`-aligned samples; the HAL upholds this for the IO buffers
+/// it passes to `DoIOOperation`. A null pointer or zero count
+/// yields an empty slice.
+unsafe fn out_samples<'a>(ptr: *mut c_void, count: usize) -> &'a mut [f32] {
+    if ptr.is_null() || count == 0 {
+        return &mut [];
+    }
+    // Safety: forwarded from the caller's contract.
+    unsafe { core::slice::from_raw_parts_mut(ptr.cast::<f32>(), count) }
 }
 
 /// `IUnknown::QueryInterface` — slot 2 of the vtable.
@@ -362,14 +411,21 @@ pub unsafe extern "C" fn get_zero_time_stamp(
     OsStatus::OK.as_i32()
 }
 
+/// `true` iff [`do_io_operation`] services `operation` — the
+/// framework moves audio for `ReadInput` (device ring → client) and
+/// `WriteMix` (client → device ring), and leaves every other
+/// operation to the HAL.
+fn framework_handles(operation: IoOperation) -> bool {
+    matches!(operation, IoOperation::READ_INPUT | IoOperation::WRITE_MIX)
+}
+
 /// `WillDoIOOperation` — tell the HAL whether the framework handles
 /// `operation_id`.
 ///
-/// The framework does not yet move audio: the realtime data path
-/// (`DoIOOperation`) lands in a follow-up PR. Until then this
-/// answers "no" to every operation, so the HAL drives the device's
-/// clock without expecting the plug-in to read or write samples —
-/// the device runs and produces silence.
+/// The framework handles the two data-movement operations —
+/// `ReadInput` (fill a client's input buffer from the device ring)
+/// and `WriteMix` (store a client's output in the device ring) — and
+/// declines the rest, which the HAL then performs itself.
 ///
 /// # Safety
 ///
@@ -380,7 +436,7 @@ pub unsafe extern "C" fn will_do_io_operation(
     driver: AudioServerPlugInDriverRef,
     _device_id: AudioObjectID,
     _client_id: UInt32,
-    _operation_id: UInt32,
+    operation_id: UInt32,
     out_will_do: *mut Boolean,
     out_will_do_in_place: *mut Boolean,
 ) -> OSStatus {
@@ -388,15 +444,131 @@ pub unsafe extern "C" fn will_do_io_operation(
     let Some(_object) = (unsafe { DriverObject::from_ref(driver) }) else {
         return OsStatus::BAD_OBJECT.as_i32();
     };
+    let handled = framework_handles(IoOperation::from(FourCharCode::from_u32(operation_id)));
     if !out_will_do.is_null() {
         // Safety: caller guarantees the pointer is writable.
-        unsafe { *out_will_do = 0 };
+        unsafe { *out_will_do = Boolean::from(handled) };
     }
     if !out_will_do_in_place.is_null() {
+        // The framework operates directly on the HAL's IO buffer.
         // Safety: caller guarantees the pointer is writable.
         unsafe { *out_will_do_in_place = 1 };
     }
     OsStatus::OK.as_i32()
+}
+
+/// `DoIOOperation` — move one IO cycle's audio between the HAL's
+/// buffer and the device's ring.
+///
+/// The framework services the two data-movement operations:
+///
+/// - **`WriteMix`** — `io_main_buffer` holds a client's output
+///   audio. The framework runs it through
+///   [`Driver::process_io`](crate::Driver::process_io) (input →
+///   output transform) and stores the result in the device ring at
+///   the cycle's output sample time.
+/// - **`ReadInput`** — the framework reads the device ring at the
+///   cycle's input sample time, runs it through `process_io`, and
+///   writes the result into `io_main_buffer` for the client.
+///
+/// For a plain loopback driver `process_io` is the identity copy,
+/// so what one client writes another reads back. Any other
+/// operation is a no-op success — `WillDoIOOperation` already told
+/// the HAL the framework does not handle it.
+///
+/// Realtime-safe: the HAL's buffer and the ring are bridged through
+/// a fixed `MAX_CYCLE_SAMPLES` stack scratch buffer (no heap), the
+/// ring access is lock-free, and `process_io` runs on the framework
+/// side without locking. A cycle larger than `MAX_CYCLE_SAMPLES`
+/// is declined with [`OsStatus::UNSPECIFIED`] rather than allocating.
+///
+/// # Safety
+///
+/// Called by the HAL across the C ABI on its realtime IO thread.
+/// `driver` must be a live driver ref; `io_cycle_info` may be null;
+/// `io_main_buffer` must point to at least
+/// `io_buffer_frame_size * channels` `f32` samples for the
+/// operation's direction (readable for `WriteMix`, writable for
+/// `ReadInput`), or be null.
+#[allow(clippy::too_many_arguments)] // one parameter per C ABI argument
+pub unsafe extern "C" fn do_io_operation(
+    driver: AudioServerPlugInDriverRef,
+    _device_id: AudioObjectID,
+    _stream_id: AudioObjectID,
+    _client_id: UInt32,
+    operation_id: UInt32,
+    io_buffer_frame_size: UInt32,
+    io_cycle_info: *const AudioServerPlugInIOCycleInfo,
+    io_main_buffer: *mut c_void,
+    _io_secondary_buffer: *mut c_void,
+) -> OSStatus {
+    // Safety: the HAL passes a live driver ref.
+    let Some(object) = (unsafe { DriverObject::from_ref(driver) }) else {
+        return OsStatus::BAD_OBJECT.as_i32();
+    };
+    let operation = IoOperation::from(FourCharCode::from_u32(operation_id));
+    if !framework_handles(operation) {
+        // `WillDoIOOperation` declined this operation; if the HAL
+        // calls through anyway there is nothing for us to do.
+        return OsStatus::OK.as_i32();
+    }
+
+    let runtime = object.runtime();
+    let ring = runtime.ring();
+    let channels = ring.channels();
+    let sample_count = io_buffer_frame_size as usize * channels;
+    if sample_count > MAX_CYCLE_SAMPLES {
+        // The cycle is larger than the stack scratch buffer; decline
+        // it rather than allocating on the realtime thread.
+        return OsStatus::UNSPECIFIED.as_i32();
+    }
+
+    // The cycle's timestamp: `ReadInput` is keyed to the input
+    // timeline, `WriteMix` to the output timeline.
+    // Safety: `io_cycle_info` is either null or a valid pointer.
+    let timestamp = match unsafe { io_cycle_info.as_ref() } {
+        Some(cycle) if operation == IoOperation::READ_INPUT => {
+            marshal::timestamp_from_raw(&cycle.mInputTime)
+        }
+        Some(cycle) => marshal::timestamp_from_raw(&cycle.mOutputTime),
+        None => crate::io::Timestamp::ZERO,
+    };
+    let sample_time = timestamp.sample_time;
+
+    // The realtime witness — this is the framework's IO harness,
+    // exactly case (1) of the `RealtimeContext` contract.
+    // Safety: `do_io_operation` runs on the HAL's realtime IO thread.
+    let rt = unsafe { RealtimeContext::new_unchecked() };
+
+    // The stack scratch buffer bridges the HAL's buffer and the
+    // ring without touching the heap.
+    let mut scratch = [0.0_f32; MAX_CYCLE_SAMPLES];
+    let scratch = &mut scratch[..sample_count];
+
+    let result = match operation {
+        IoOperation::WRITE_MIX => {
+            // Safety: for `WriteMix` the HAL's buffer holds the
+            // client's output samples and is readable.
+            let client = unsafe { in_samples(io_main_buffer, sample_count) };
+            let mut io = IoBuffer::new(timestamp, operation, client, scratch);
+            let result = runtime.driver().process_io(&rt, &mut io);
+            if result.is_ok() {
+                ring.write_from(sample_time, io.output);
+            }
+            result
+        }
+        // `ReadInput`.
+        _ => {
+            ring.read_into(sample_time, scratch);
+            // Safety: for `ReadInput` the HAL's buffer receives the
+            // client's input samples and is writable.
+            let client = unsafe { out_samples(io_main_buffer, sample_count) };
+            let mut io = IoBuffer::new(timestamp, operation, scratch, client);
+            runtime.driver().process_io(&rt, &mut io)
+        }
+    };
+
+    OsStatus::from(result).as_i32()
 }
 
 /// `BeginIOOperation` — the HAL is about to run one IO operation.
@@ -739,7 +911,14 @@ mod tests {
                 .with_output(StreamSpec::output(format))
         }
 
-        fn process_io(&mut self, _rt: &RealtimeContext, _buffer: &mut IoBuffer<'_>) {}
+        fn process_io(&mut self, _rt: &RealtimeContext, buffer: &mut IoBuffer<'_>) {
+            // A real loopback: copy the operation's input straight
+            // to its output, so `DoIOOperation` round-trips audio
+            // through the device ring.
+            let n = buffer.output.len().min(buffer.input.len());
+            buffer.output[..n].copy_from_slice(&buffer.input[..n]);
+            buffer.output[n..].fill(0.0);
+        }
     }
 
     /// A live driver object plus the raw ref the entry points take.
@@ -1266,6 +1445,210 @@ mod tests {
                 end_io_operation(null, 2, 0, 0, 0, core::ptr::null()),
                 OsStatus::BAD_OBJECT.as_i32()
             );
+            assert_eq!(
+                do_io_operation(
+                    null,
+                    2,
+                    3,
+                    0,
+                    IoOperation::WRITE_MIX.code().as_u32(),
+                    128,
+                    core::ptr::null(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                OsStatus::BAD_OBJECT.as_i32()
+            );
         }
+    }
+
+    /// An `AudioServerPlugInIOCycleInfo` whose input and output
+    /// timelines both sit at sample time `t`.
+    fn cycle_at(t: f64) -> AudioServerPlugInIOCycleInfo {
+        let mut info = AudioServerPlugInIOCycleInfo::default();
+        info.mInputTime.mSampleTime = t;
+        info.mOutputTime.mSampleTime = t;
+        info
+    }
+
+    #[test]
+    fn will_do_io_operation_claims_only_the_data_operations() {
+        let fixture = Fixture::new();
+        let mut will_do: Boolean = 0xFF;
+        let mut in_place: Boolean = 0;
+        // Safety: `driver_ref` is live; the out-pointers are valid.
+        unsafe {
+            // The framework handles `ReadInput` and `WriteMix`.
+            for op in [IoOperation::READ_INPUT, IoOperation::WRITE_MIX] {
+                will_do_io_operation(
+                    fixture.driver_ref,
+                    2,
+                    0,
+                    op.code().as_u32(),
+                    &mut will_do,
+                    &mut in_place,
+                );
+                assert_eq!(will_do, 1, "{op:?} should be handled");
+            }
+            // …and declines the rest.
+            for op in [
+                IoOperation::CYCLE,
+                IoOperation::PROCESS_OUTPUT,
+                IoOperation::MIX_OUTPUT,
+            ] {
+                will_do_io_operation(
+                    fixture.driver_ref,
+                    2,
+                    0,
+                    op.code().as_u32(),
+                    &mut will_do,
+                    &mut in_place,
+                );
+                assert_eq!(will_do, 0, "{op:?} should be declined");
+            }
+        }
+    }
+
+    #[test]
+    fn do_io_operation_round_trips_audio_through_the_device_ring() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+        }
+
+        // The device is stereo: 4 frames × 2 channels = 8 samples.
+        let written = [0.1_f32, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8];
+        let cycle = cycle_at(64.0);
+
+        // `WriteMix`: a client's output is stored in the device ring.
+        // Safety: `driver_ref` is live; `written` is a readable
+        // 8-sample buffer matching the 4-frame cycle.
+        let status = unsafe {
+            do_io_operation(
+                fixture.driver_ref,
+                2,
+                4, // output stream id
+                0,
+                IoOperation::WRITE_MIX.code().as_u32(),
+                4, // frame count
+                &cycle,
+                written.as_ptr() as *mut c_void,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+
+        // `ReadInput` at the same sample time: another client reads
+        // the device ring back — the loopback round-trip.
+        let mut read = [0.0_f32; 8];
+        // Safety: `driver_ref` is live; `read` is a writable
+        // 8-sample buffer matching the cycle.
+        let status = unsafe {
+            do_io_operation(
+                fixture.driver_ref,
+                2,
+                3, // input stream id
+                0,
+                IoOperation::READ_INPUT.code().as_u32(),
+                4,
+                &cycle,
+                read.as_mut_ptr().cast(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+        assert_eq!(read, written, "what was written must read back");
+    }
+
+    #[test]
+    fn do_io_operation_reads_silence_from_an_untouched_ring() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+        }
+        let cycle = cycle_at(1_000.0);
+        let mut read = [9.0_f32; 8];
+        // Safety: `driver_ref` is live; `read` is a writable buffer.
+        let status = unsafe {
+            do_io_operation(
+                fixture.driver_ref,
+                2,
+                3,
+                0,
+                IoOperation::READ_INPUT.code().as_u32(),
+                4,
+                &cycle,
+                read.as_mut_ptr().cast(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+        assert!(
+            read.iter().all(|&s| s == 0.0),
+            "an untouched ring is silent"
+        );
+    }
+
+    #[test]
+    fn do_io_operation_declines_an_oversized_cycle() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+        }
+        let cycle = cycle_at(0.0);
+        // A frame count whose sample total exceeds the stack scratch
+        // buffer — declined rather than allocated for.
+        let huge_frames = (MAX_CYCLE_SAMPLES / 2 + 1) as UInt32;
+        // Safety: `driver_ref` is live; the buffer pointer is not
+        // dereferenced once the size check fails.
+        let status = unsafe {
+            do_io_operation(
+                fixture.driver_ref,
+                2,
+                4,
+                0,
+                IoOperation::WRITE_MIX.code().as_u32(),
+                huge_frames,
+                &cycle,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, OsStatus::UNSPECIFIED.as_i32());
+    }
+
+    #[test]
+    fn do_io_operation_ignores_an_operation_it_does_not_handle() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+        }
+        let cycle = cycle_at(0.0);
+        // `MixOutput` is not one of the framework's operations — the
+        // entry point is a no-op success, never touching the buffer.
+        // Safety: `driver_ref` is live; the null buffer is never
+        // dereferenced for an unhandled operation.
+        let status = unsafe {
+            do_io_operation(
+                fixture.driver_ref,
+                2,
+                4,
+                0,
+                IoOperation::MIX_OUTPUT.code().as_u32(),
+                4,
+                &cycle,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
     }
 }

@@ -13,13 +13,11 @@
 //!
 //! This table wires the `IUnknown` preamble, `Initialize`, the
 //! device-client hooks, the full property protocol, `StartIO` /
-//! `StopIO`, and the IO-cycle timing callbacks (`GetZeroTimeStamp`,
-//! `WillDoIOOperation`, `BeginIOOperation`, `EndIOOperation`). The
-//! remaining slots — `CreateDevice` / `DestroyDevice` (the
-//! framework's device is static, not HAL-created), the
-//! configuration-change pair, and `DoIOOperation` (the realtime
-//! data movement) — are `None` for now; `DoIOOperation` is filled
-//! when the IO data path lands.
+//! `StopIO`, and the entire IO cycle — the clock callbacks, the
+//! per-operation brackets, and `DoIOOperation`, the realtime data
+//! movement. The only `None` slots are `CreateDevice` /
+//! `DestroyDevice` (the framework's device is static, not
+//! HAL-created) and the configuration-change pair.
 //!
 //! Building the table needs no FFI, so its shape is unit-tested on
 //! any host.
@@ -72,14 +70,14 @@ static DRIVER_INTERFACE: StaticInterface = StaticInterface(AudioServerPlugInDriv
     StartIO: Some(entry::start_io),
     StopIO: Some(entry::stop_io),
 
-    // IO-cycle timing: the device clock and the per-operation
-    // brackets. `DoIOOperation` — the realtime data movement — is
-    // still `None`; until it lands `WillDoIOOperation` answers "no"
-    // to every operation, so the device runs and produces silence.
+    // IO-cycle: the device clock, the per-operation brackets, and
+    // the realtime data movement. `DoIOOperation` reads and writes
+    // the device's audio ring; `WillDoIOOperation` tells the HAL it
+    // handles `ReadInput` and `WriteMix`.
     GetZeroTimeStamp: Some(entry::get_zero_time_stamp),
     WillDoIOOperation: Some(entry::will_do_io_operation),
     BeginIOOperation: Some(entry::begin_io_operation),
-    DoIOOperation: None,
+    DoIOOperation: Some(entry::do_io_operation),
     EndIOOperation: Some(entry::end_io_operation),
 });
 
@@ -119,11 +117,12 @@ mod tests {
         assert!(vtable.SetPropertyData.is_some());
         assert!(vtable.StartIO.is_some());
         assert!(vtable.StopIO.is_some());
-        // IO-cycle timing — the device clock and the per-operation
-        // brackets.
+        // The full IO cycle — clock, brackets, and the realtime
+        // data movement.
         assert!(vtable.GetZeroTimeStamp.is_some());
         assert!(vtable.WillDoIOOperation.is_some());
         assert!(vtable.BeginIOOperation.is_some());
+        assert!(vtable.DoIOOperation.is_some());
         assert!(vtable.EndIOOperation.is_some());
     }
 
@@ -135,8 +134,6 @@ mod tests {
         assert!(vtable.DestroyDevice.is_none());
         assert!(vtable.PerformDeviceConfigurationChange.is_none());
         assert!(vtable.AbortDeviceConfigurationChange.is_none());
-        // The realtime data movement lands with the IO data path.
-        assert!(vtable.DoIOOperation.is_none());
     }
 
     #[test]
