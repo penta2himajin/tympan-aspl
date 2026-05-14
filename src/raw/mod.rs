@@ -36,8 +36,10 @@
 //! abstractions.
 
 pub mod abi;
+pub mod clock;
 pub mod entry;
 pub mod marshal;
+pub mod platform;
 pub mod runtime;
 pub mod vtable;
 

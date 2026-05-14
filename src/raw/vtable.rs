@@ -12,12 +12,14 @@
 //! ## Populated slots
 //!
 //! This table wires the `IUnknown` preamble, `Initialize`, the
-//! device-client hooks, the full property protocol, and `StartIO` /
-//! `StopIO`. The remaining slots — `CreateDevice` / `DestroyDevice`
-//! (the framework's device is static, not HAL-created), the
-//! configuration-change pair, and the five IO-cycle callbacks — are
-//! `None` for now; the IO-cycle slots are filled when the realtime
-//! IO path lands.
+//! device-client hooks, the full property protocol, `StartIO` /
+//! `StopIO`, and the IO-cycle timing callbacks (`GetZeroTimeStamp`,
+//! `WillDoIOOperation`, `BeginIOOperation`, `EndIOOperation`). The
+//! remaining slots — `CreateDevice` / `DestroyDevice` (the
+//! framework's device is static, not HAL-created), the
+//! configuration-change pair, and `DoIOOperation` (the realtime
+//! data movement) — are `None` for now; `DoIOOperation` is filled
+//! when the IO data path lands.
 //!
 //! Building the table needs no FFI, so its shape is unit-tested on
 //! any host.
@@ -69,12 +71,16 @@ static DRIVER_INTERFACE: StaticInterface = StaticInterface(AudioServerPlugInDriv
 
     StartIO: Some(entry::start_io),
     StopIO: Some(entry::stop_io),
-    // The realtime IO-cycle callbacks land with the IO path.
-    GetZeroTimeStamp: None,
-    WillDoIOOperation: None,
-    BeginIOOperation: None,
+
+    // IO-cycle timing: the device clock and the per-operation
+    // brackets. `DoIOOperation` — the realtime data movement — is
+    // still `None`; until it lands `WillDoIOOperation` answers "no"
+    // to every operation, so the device runs and produces silence.
+    GetZeroTimeStamp: Some(entry::get_zero_time_stamp),
+    WillDoIOOperation: Some(entry::will_do_io_operation),
+    BeginIOOperation: Some(entry::begin_io_operation),
     DoIOOperation: None,
-    EndIOOperation: None,
+    EndIOOperation: Some(entry::end_io_operation),
 });
 
 /// A reference to the framework's `'static` driver vtable.
@@ -101,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_and_property_slots_are_wired() {
+    fn lifecycle_property_and_io_timing_slots_are_wired() {
         let vtable = driver_interface();
         assert!(vtable.Initialize.is_some());
         assert!(vtable.AddDeviceClient.is_some());
@@ -113,6 +119,12 @@ mod tests {
         assert!(vtable.SetPropertyData.is_some());
         assert!(vtable.StartIO.is_some());
         assert!(vtable.StopIO.is_some());
+        // IO-cycle timing — the device clock and the per-operation
+        // brackets.
+        assert!(vtable.GetZeroTimeStamp.is_some());
+        assert!(vtable.WillDoIOOperation.is_some());
+        assert!(vtable.BeginIOOperation.is_some());
+        assert!(vtable.EndIOOperation.is_some());
     }
 
     #[test]
@@ -123,12 +135,8 @@ mod tests {
         assert!(vtable.DestroyDevice.is_none());
         assert!(vtable.PerformDeviceConfigurationChange.is_none());
         assert!(vtable.AbortDeviceConfigurationChange.is_none());
-        // The IO-cycle callbacks land with the realtime IO path.
-        assert!(vtable.GetZeroTimeStamp.is_none());
-        assert!(vtable.WillDoIOOperation.is_none());
-        assert!(vtable.BeginIOOperation.is_none());
+        // The realtime data movement lands with the IO data path.
         assert!(vtable.DoIOOperation.is_none());
-        assert!(vtable.EndIOOperation.is_none());
     }
 
     #[test]
