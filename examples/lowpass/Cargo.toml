@@ -1,0 +1,22 @@
+[package]
+name = "lowpass"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "Reference AudioServerPlugin: a stateful one-pole low-pass virtual device"
+publish = false
+
+# `cdylib` is the loadable plug-in binary that goes inside
+# `LowPass.driver/Contents/MacOS/` — `plugin_entry!` emits its
+# `TympanAsplDriverFactory` entry point. `rlib` is kept so the
+# crate's unit tests still build and link against the `Driver`
+# implementation directly.
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+tympan-aspl = { path = "../.." }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["examples/minimal-loopback"]
+members = ["examples/minimal-loopback", "examples/gain", "examples/lowpass"]
 
 [package]
 name = "tympan-aspl"
