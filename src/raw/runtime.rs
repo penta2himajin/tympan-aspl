@@ -29,6 +29,7 @@ use crate::driver::{AnyDriver, DriverInfo};
 use crate::objects::ObjectMap;
 use crate::raw::abi::{AudioServerPlugInDriverInterface, AudioServerPlugInHostRef};
 use crate::raw::clock::DeviceClock;
+use crate::raw::ring::DeviceRing;
 use crate::realtime::Refcount;
 
 /// The framework state behind a [`DriverObject`]'s vtable pointer.
@@ -59,18 +60,35 @@ pub struct DriverRuntime {
     /// The device's synthetic zero-timestamp clock. `StartIO`
     /// anchors it, `GetZeroTimeStamp` reads it, `StopIO` halts it.
     clock: DeviceClock,
+    /// The device's audio backing store — what makes a loopback
+    /// loop. Allocated here, off the realtime path; `DoIOOperation`
+    /// reads and writes it lock-free.
+    ring: DeviceRing,
 }
 
 impl DriverRuntime {
     /// Build the runtime for `driver`: materialise its object tree,
-    /// cache its identity, and seed the device state from the
-    /// device spec.
+    /// cache its identity, seed the device state, and allocate the
+    /// device's audio ring.
+    ///
+    /// The ring holds one zero-timestamp period — one second at the
+    /// device's nominal sample rate — of audio, wide enough for the
+    /// device's busiest stream.
     #[must_use]
     pub fn new(driver: Arc<dyn AnyDriver>) -> Self {
         let spec = driver.device();
         let objects = ObjectMap::new(spec);
         let info = driver.info();
         let state = Mutex::new(DeviceState::from_spec(objects.spec()));
+
+        // One second of audio, sized for whichever stream carries
+        // the most channels; `max(1)` keeps a streamless device's
+        // ring construction from panicking.
+        let capacity_frames = (spec.sample_rate() as usize).max(1);
+        let input_channels = spec.input().map_or(0, |stream| stream.channels() as usize);
+        let output_channels = spec.output().map_or(0, |stream| stream.channels() as usize);
+        let channels = input_channels.max(output_channels).max(1);
+
         Self {
             driver,
             objects,
@@ -78,6 +96,7 @@ impl DriverRuntime {
             state,
             host: AtomicPtr::new(core::ptr::null_mut()),
             clock: DeviceClock::new(),
+            ring: DeviceRing::new(capacity_frames, channels),
         }
     }
 
@@ -129,6 +148,13 @@ impl DriverRuntime {
     #[must_use]
     pub fn clock(&self) -> &DeviceClock {
         &self.clock
+    }
+
+    /// The device's audio backing store.
+    #[inline]
+    #[must_use]
+    pub fn ring(&self) -> &DeviceRing {
+        &self.ring
     }
 }
 
