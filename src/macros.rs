@@ -55,13 +55,15 @@
 /// the link tree. Each `.driver` cdylib invokes `plugin_entry!`
 /// exactly once at its crate root.
 ///
-/// ## Platform gate
+/// ## Cross-platform expansion
 ///
-/// The macro is *defined* on every platform so its documentation
-/// resolves, but it can only be *expanded* on macOS: the CFPlugIn
-/// factory it emits forwards to the `raw` module,
-/// which is itself `cfg(target_os = "macos")`. Invoking it on
-/// another platform is a compile error.
+/// The macro expands on every platform: the CFPlugIn factory it
+/// emits forwards to `raw::driver_factory_dispatch`, and the `raw`
+/// module is ordinary cross-platform Rust — an `extern "C"`
+/// function merely *uses* the C calling convention. So a driver
+/// crate invoking `plugin_entry!` builds and unit-tests on any
+/// host; only loading the resulting `.driver` bundle into
+/// `coreaudiod` is macOS-specific.
 #[macro_export]
 macro_rules! plugin_entry {
     ($driver:ty) => {
