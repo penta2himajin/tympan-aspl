@@ -74,9 +74,9 @@ pub struct Gain {
 impl Gain {
     /// The [`BundleConfig`] describing this driver's `.driver`
     /// bundle. The committed `Info.plist` is exactly
-    /// [`generate`]`(&Gain::bundle_config())` — the
-    /// `committed_info_plist_matches_the_generator` test enforces
-    /// it.
+    /// [`generate`](tympan_aspl::bundle::plist::generate)`(&Gain::bundle_config())`
+    /// — the `committed_info_plist_matches_the_generator` test
+    /// enforces it.
     #[must_use]
     pub const fn bundle_config() -> BundleConfig {
         BundleConfig::new(DEVICE_UID, FACTORY_UUID, "TympanAsplDriverFactory")

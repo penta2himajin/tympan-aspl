@@ -9,10 +9,10 @@
 //!
 //! ## What this example shows
 //!
-//! - **Per-instance processing state.** The filter memory
-//!   [`LowPass::prev`] lives in the struct, is created by
-//!   [`Driver::new`], and persists across `process_io` calls — that
-//!   is what makes the filter a filter.
+//! - **Per-instance processing state.** The filter memory — the
+//!   `prev` field of [`LowPass`] — lives in the struct, is created
+//!   by [`Driver::new`], and persists across `process_io` calls;
+//!   that is what makes the filter a filter.
 //! - **Resetting state in [`Driver::start_io`].** A fresh IO
 //!   session must not hear the tail of the previous one, so
 //!   `start_io` clears the filter memory. `start_io` is also where
@@ -73,9 +73,9 @@ pub struct LowPass {
 impl LowPass {
     /// The [`BundleConfig`] describing this driver's `.driver`
     /// bundle. The committed `Info.plist` is exactly
-    /// [`generate`]`(&LowPass::bundle_config())` — the
-    /// `committed_info_plist_matches_the_generator` test enforces
-    /// it.
+    /// [`generate`](tympan_aspl::bundle::plist::generate)`(&LowPass::bundle_config())`
+    /// — the `committed_info_plist_matches_the_generator` test
+    /// enforces it.
     #[must_use]
     pub const fn bundle_config() -> BundleConfig {
         BundleConfig::new(DEVICE_UID, FACTORY_UUID, "TympanAsplDriverFactory")
