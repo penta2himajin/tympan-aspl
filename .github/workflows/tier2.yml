@@ -1,0 +1,61 @@
+name: Tier 2
+
+# Bundle and ABI verification per
+# docs/decisions/0001-ci-verification-strategy.md § Tier 2.
+# Runs on every pull request and every push to main.
+#
+# Wired up so far: `plutil -lint` over the committed example
+# Info.plist and over an Info.plist emitted by the `bundle` module.
+# The `nm -gU` symbol-visibility, `lipo -info`, and `codesign -v`
+# steps land alongside the first buildable `.driver` bundle, per the
+# ADR. Until then this workflow keeps the bundle fixtures honest.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tier2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  tier2:
+    name: Bundle Info.plist verification (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tier2
+
+      - name: plutil -lint committed Info.plist fixtures
+        run: |
+          set -euo pipefail
+          plutil -lint examples/minimal-loopback/Info.plist
+
+      - name: plutil -lint Info.plist emitted by the bundle module
+        # The `bundle` module's generator must produce a plist that
+        # `plutil` accepts. `print-info-plist` is a tiny example
+        # binary that writes the generated plist to stdout.
+        run: |
+          set -euo pipefail
+          cargo run --quiet --example print-info-plist > generated-Info.plist
+          plutil -lint generated-Info.plist
+          cat generated-Info.plist
