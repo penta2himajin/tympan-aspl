@@ -131,9 +131,13 @@ the hosted runner cannot perform mid-job. The only way to exercise
 a full load on hosted CI is a Developer ID-signed bundle supplied
 via a GitHub secret.
 
-An in-process lifecycle harness driving the IO path under an
-`assert_no_alloc` global-allocator guard remains a planned addition
-and does not depend on the code-signing constraint.
+Two in-process lifecycle harnesses cover the IO path under an
+`assert_no_alloc` global-allocator guard, on every PR in Tier 1,
+without depending on the code-signing constraint:
+`tests/realtime_safety.rs` drives the safe `DriverInstance` API, and
+`tests/raw_lifecycle.rs` drives the framework through its actual
+`AudioServerPlugInDriverInterface` vtable — the factory, the entry
+points, and the `DoIOOperation` data path `coreaudiod` would call.
 
 This tier does not block PR merge — `tier3.yml` runs on merges to
 `main`, a daily schedule, and manual dispatch, never on a pull
