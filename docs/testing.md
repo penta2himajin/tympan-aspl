@@ -57,14 +57,23 @@ Sequence:
 1. `sudo cp -R target/release/example.driver /Library/Audio/Plug-Ins/HAL/`
 2. `sudo launchctl kill KILL system/com.apple.audio.coreaudiod`
 3. Wait briefly for `coreaudiod` to relaunch automatically
-4. `system_profiler SPAudioDataType | grep <device-name>` should show
-   the example device
+4. read `coreaudiod`'s unified log and confirm it discovers and
+   attempts to load the plug-in
 
-GitHub-hosted runners support all of these steps:
+GitHub-hosted runners support steps 1–4: `sudo` is passwordless,
+and `coreaudiod` does scan the HAL directory and try to load the
+bundle.
 
-- `sudo` is available without a password
-- HAL plugin loading is not blocked by SIP (only debugger attachment is)
-- Ad-hoc signing is sufficient for `coreaudiod` to load the plugin
+**They do not, however, run the plug-in to completion.** On
+macOS 15 the out-of-process Core Audio Driver Service helper
+enforces code-signature validity, and macOS AMFI rejects an
+ad-hoc-signed plug-in binary with `AppleMobileFileIntegrityError
+-423` before any plug-in code executes. A GitHub-hosted runner
+cannot produce a Developer ID signature, so hosted Tier 3 stops at
+"the load was attempted". Confirming the device enumerates
+(`system_profiler SPAudioDataType | grep <device-name>`) and
+exercising the IO path require a Developer ID-signed bundle and are
+Tier 4 checks.
 
 Runs on every merge to `main` and on a daily schedule.
 
@@ -118,22 +127,27 @@ SIP is active by default on GitHub-hosted runners and cannot be
 disabled (`csrutil disable` requires Recovery Mode). The implications
 for AudioServerPlugin testing:
 
-| Operation | Allowed under SIP | Notes |
+| Operation | Allowed | Notes |
 |---|---|---|
 | Place `.driver` in `/Library/Audio/Plug-Ins/HAL/` | Yes | Requires `sudo`, which runners provide |
 | Restart `coreaudiod` | Yes | Via `launchctl kill` |
-| `coreaudiod` loads unsigned plugin | Yes | HAL plugins are not subject to kernel signature requirements |
+| `coreaudiod` discovers / attempts the plug-in | Yes | It scans the HAL directory and parses the bundle |
+| `coreaudiod` loads an **ad-hoc-signed** plug-in to completion | **No** | AMFI rejects it (`AppleMobileFileIntegrityError -423`) |
+| `coreaudiod` loads a **Developer ID-signed** plug-in | Yes | But CI cannot produce such a signature |
 | Attach `lldb` to `coreaudiod` | No | SIP blocks debugger attachment to system daemons |
-| Audio device enumeration | Yes | Standard HAL client API |
 | Modify SIP itself | No | Recovery Mode only |
-| Run a private `coreaudiod` instance | Partially | Works but with reduced functionality |
 
-Key observation: **SIP does not prevent loading unsigned HAL plugins**.
-It prevents debugger attachment to `coreaudiod`, which affects
-*debugging* but not *running*. Tier 3 verification works on stock
-runners; deep debugging of issues encountered in CI requires a local
-machine with SIP partially disabled via undocumented `csrutil`
-options.
+Key observation: **macOS AMFI does prevent *completing* the load of
+an ad-hoc-signed HAL plug-in.** On macOS 15 the out-of-process Core
+Audio Driver Service helper enforces code-signature validity; an
+ad-hoc signature is rejected with `AppleMobileFileIntegrityError
+-423`. `coreaudiod` still discovers the bundle and *attempts* the
+load — which is what hosted Tier 3 verifies — but the device does
+not enumerate. Running the plug-in to completion needs a Developer
+ID signature, which a GitHub-hosted runner cannot produce; that is a
+Tier 4 (self-hosted / manual) check. (This corrects the project's
+original survey, which assumed unsigned HAL plug-ins load freely —
+true for older models, not for the macOS 15 driver-service helper.)
 
 ## What cannot be verified on GitHub-hosted runners
 
@@ -234,9 +248,16 @@ Tiers 1, 2, and 3 are wired up:
   Info.plists, the example `.driver` cdylib build, an `nm` factory-
   symbol check, `lipo -info`, and `.driver` bundle assembly + ad-hoc
   `codesign`, on every pull request.
-- `tier3.yml` — `coreaudiod` HAL-load verification: install the
-  `.driver`, restart `coreaudiod`, confirm `system_profiler` lists
-  the virtual device. Runs on merges to `main`, a daily schedule,
-  and manual dispatch — never on a pull request — per ADR 0001.
+- `tier3.yml` — `coreaudiod` plug-in-load verification: install the
+  `.driver`, restart `coreaudiod`, and confirm from `coreaudiod`'s
+  unified log that it discovers and *attempts* to load the plug-in.
+  It does not assert device enumeration: AMFI rejects the
+  ad-hoc-signed binary on a hosted runner (see the SIP section
+  above). Runs on merges to `main`, a daily schedule, and manual
+  dispatch — never on a pull request — per ADR 0001.
 
-Tier 4 remains a manual, pre-release checklist.
+Tier 4 remains a manual, pre-release checklist — and now also owns
+the checks the AMFI code-signing constraint pushes out of hosted
+CI: loading a Developer ID-signed `.driver` to completion,
+confirming `system_profiler` enumerates the device, and exercising
+the IO path.

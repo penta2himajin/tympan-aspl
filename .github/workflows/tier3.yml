@@ -9,10 +9,18 @@ name: Tier 3
 # investigate, not a block.
 #
 # It builds the example `.driver`, installs it into the HAL plug-in
-# directory, restarts `coreaudiod`, and confirms the virtual device
-# is enumerated — an end-to-end proof that the `raw` ABI layer (the
-# CFPlugIn vtable, the struct layouts, the property entry points)
-# is correct against the real Core Audio C ABI.
+# directory, restarts `coreaudiod`, and confirms `coreaudiod`
+# *discovers and attempts to load* the plug-in — proof that the
+# bundle structure, `Info.plist`, and CFPlugIn registration are
+# well-formed.
+#
+# What it deliberately does NOT assert: that the device then
+# enumerates. On a GitHub-hosted runner macOS AMFI rejects the
+# ad-hoc-signed plug-in binary (`AppleMobileFileIntegrityError
+# -423`), so the Core Audio Driver Service helper discards it before
+# any plug-in code runs. Confirming the device actually appears, and
+# exercising the IO path, needs a Developer ID-signed bundle and is
+# a Tier 4 (manual / self-hosted) step — see docs/testing.md.
 
 on:
   push:
@@ -36,7 +44,7 @@ env:
 
 jobs:
   tier3:
-    name: coreaudiod HAL load (macos-15)
+    name: coreaudiod plug-in load (macos-15)
     runs-on: macos-15
     timeout-minutes: 25
 
@@ -71,9 +79,8 @@ jobs:
 
       - name: Install the bundle into the HAL plug-in directory
         # `/Library/Audio/Plug-Ins/HAL/` is the directory `coreaudiod`
-        # scans for AudioServerPlugins. SIP permits the copy (with
-        # `sudo`, which the runner provides) and permits `coreaudiod`
-        # to load an ad-hoc-signed plug-in.
+        # scans for AudioServerPlugins. SIP permits the copy with
+        # `sudo`, which the runner provides.
         run: sudo cp -R MinimalLoopback.driver /Library/Audio/Plug-Ins/HAL/
 
       - name: Restart coreaudiod
@@ -83,35 +90,53 @@ jobs:
           # it makes launchd relaunch it, and the fresh process scans
           # the HAL plug-in directory.
           sudo launchctl kill KILL system/com.apple.audio.coreaudiod || true
-          sleep 5
+          sleep 8
 
-      - name: coreaudiod enumerates the virtual device
-        # `system_profiler SPAudioDataType` lists every audio device
-        # the HAL knows about. The virtual device showing up proves
-        # `coreaudiod` loaded the plug-in and the property entry
-        # points answered the device-tree queries correctly.
+      - name: coreaudiod discovers and attempts to load the plug-in
+        # `coreaudiod` (and its out-of-process Core Audio Driver
+        # Service helper) log every plug-in they scan. Seeing the
+        # bundle named in those logs proves the `.driver` layout,
+        # the `Info.plist`, and the CFPlugIn registration are
+        # well-formed enough for the HAL to parse and try to load.
+        #
+        # On a hosted runner the load then fails at the OS code-
+        # signing layer — AMFI rejects the ad-hoc signature — so the
+        # device does not enumerate. That is expected here; the
+        # device-enumeration and IO checks are Tier 4 (they need a
+        # Developer ID signature).
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 12); do
-            if system_profiler SPAudioDataType | grep -q "Minimal Loopback"; then
-              echo "coreaudiod enumerated the Minimal Loopback device:"
-              system_profiler SPAudioDataType | grep -A 6 "Minimal Loopback"
-              exit 0
-            fi
-            echo "attempt ${attempt}/12: device not yet visible, waiting…"
-            sleep 5
-          done
-          echo "::error::coreaudiod did not enumerate the Minimal Loopback device"
-          echo "--- full SPAudioDataType output ---"
-          system_profiler SPAudioDataType || true
-          exit 1
+          PLUGIN_LOG=$(log show --last 3m --info --debug \
+            --predicate 'process == "coreaudiod" OR process == "com.apple.audio.Core-Audio-Driver-Service.helper"' \
+            2>/dev/null || true)
+
+          echo "--- coreaudiod log lines about the plug-in ---"
+          echo "$PLUGIN_LOG" | grep -E "MinimalLoopback|com\.tympan\.aspl" || true
+
+          if echo "$PLUGIN_LOG" | grep -q "Loading server plug-in com.tympan.aspl.MinimalLoopback"; then
+            echo "coreaudiod discovered and attempted to load the plug-in bundle."
+          else
+            echo "::error::coreaudiod did not discover / attempt to load MinimalLoopback.driver"
+            echo "--- full coreaudiod log ---"
+            echo "$PLUGIN_LOG"
+            exit 1
+          fi
+
+          # A bonus check: on an environment that *does* permit the
+          # load (a self-hosted runner with a real signature) the
+          # device enumerates. Hosted CI does not, and that is fine.
+          if system_profiler SPAudioDataType | grep -q "Minimal Loopback"; then
+            echo "Bonus: the device also enumerated — the signing policy permitted the load."
+            system_profiler SPAudioDataType | grep -A 6 "Minimal Loopback"
+          else
+            echo "Device not enumerated — expected on a hosted runner: AMFI (error -423) rejects the ad-hoc signature."
+          fi
 
       - name: Capture coreaudiod diagnostics on failure
-        # The enumeration step gives only "device absent". When it
-        # fails, dump everything that explains *why* `coreaudiod`
-        # did not load (or rejected) the plug-in: the daemon's own
-        # log, the installed bundle's structure and signature, the
-        # cdylib's Mach-O type / linkage / exported symbols.
+        # When the load-attempt check fails, dump everything that
+        # explains why `coreaudiod` did not even reach the bundle:
+        # its own log, the installed bundle structure and signature,
+        # and the cdylib's Mach-O type / linkage / exported symbols.
         if: ${{ failure() }}
         run: |
           BUNDLE=/Library/Audio/Plug-Ins/HAL/MinimalLoopback.driver
@@ -120,12 +145,6 @@ jobs:
           echo "::group::coreaudiod unified log (last 4 min)"
           log show --last 4m --info --debug \
             --predicate 'process == "coreaudiod"' 2>/dev/null || true
-          echo "::endgroup::"
-
-          echo "::group::log lines mentioning the plug-in"
-          log show --last 4m --info --debug \
-            --predicate 'eventMessage CONTAINS[c] "loopback" OR eventMessage CONTAINS[c] "tympan" OR eventMessage CONTAINS[c] "MinimalLoopback"' \
-            2>/dev/null || true
           echo "::endgroup::"
 
           echo "::group::installed bundle tree"
