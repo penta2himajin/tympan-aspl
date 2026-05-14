@@ -104,23 +104,33 @@ jobs:
         # device does not enumerate. That is expected here; the
         # device-enumeration and IO checks are Tier 4 (they need a
         # Developer ID signature).
+        #
+        # The unified log is queried with `eventMessage CONTAINS`
+        # (the `process ==` predicate proved unreliable) and polled:
+        # `log show` events take a little while to settle, and
+        # `coreaudiod` takes a moment to rescan the HAL directory.
         run: |
           set -euo pipefail
-          PLUGIN_LOG=$(log show --last 3m --info --debug \
-            --predicate 'process == "coreaudiod" OR process == "com.apple.audio.Core-Audio-Driver-Service.helper"' \
-            2>/dev/null || true)
+          PREDICATE='eventMessage CONTAINS[c] "MinimalLoopback" OR eventMessage CONTAINS[c] "com.tympan.aspl"'
+          PLUGIN_LOG=""
+          for attempt in $(seq 1 18); do
+            PLUGIN_LOG=$(log show --last 5m --info --debug --predicate "$PREDICATE" 2>/dev/null || true)
+            if echo "$PLUGIN_LOG" | grep -qE "Attempting to load:.*MinimalLoopback|Loading server plug-in com\.tympan\.aspl"; then
+              break
+            fi
+            echo "attempt ${attempt}/18: coreaudiod log not yet showing the plug-in, waiting…"
+            PLUGIN_LOG=""
+            sleep 5
+          done
+
+          if [ -z "$PLUGIN_LOG" ]; then
+            echo "::error::coreaudiod did not discover / attempt to load MinimalLoopback.driver"
+            exit 1
+          fi
 
           echo "--- coreaudiod log lines about the plug-in ---"
           echo "$PLUGIN_LOG" | grep -E "MinimalLoopback|com\.tympan\.aspl" || true
-
-          if echo "$PLUGIN_LOG" | grep -q "Loading server plug-in com.tympan.aspl.MinimalLoopback"; then
-            echo "coreaudiod discovered and attempted to load the plug-in bundle."
-          else
-            echo "::error::coreaudiod did not discover / attempt to load MinimalLoopback.driver"
-            echo "--- full coreaudiod log ---"
-            echo "$PLUGIN_LOG"
-            exit 1
-          fi
+          echo "coreaudiod discovered and attempted to load the plug-in bundle."
 
           # A bonus check: on an environment that *does* permit the
           # load (a self-hosted runner with a real signature) the
