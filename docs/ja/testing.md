@@ -52,22 +52,30 @@ ABI サイズチェックでは `static_assertions::assert_eq_size!` を
 ### Tier 3: HAL ロード検証
 
 ビルドした `.driver` バンドルを HAL プラグインディレクトリに配置し、
-`coreaudiod` がそれを列挙することを確認します。
+`coreaudiod` がそれを発見してロードを試みることを確認します。
 
 手順:
 
 1. `sudo cp -R target/release/example.driver /Library/Audio/Plug-Ins/HAL/`
 2. `sudo launchctl kill KILL system/com.apple.audio.coreaudiod`
 3. `coreaudiod` が自動再起動するまで少し待つ
-4. `system_profiler SPAudioDataType | grep <device-name>` で例のデバイス
-   が表示されることを確認
+4. `coreaudiod` の unified log を読み、プラグインを発見してロードを
+   試みたことを確認
 
-GitHub ホストランナーは上記すべての手順をサポートしています。
+GitHub ホストランナーは手順 1〜4 をサポートしています。`sudo` は
+パスワード不要で、`coreaudiod` は実際に HAL ディレクトリを走査して
+バンドルのロードを試みます。
 
-- `sudo` はパスワード不要で利用可能
-- HAL プラグインのロードは SIP によって妨げられない (デバッガ接続のみ
-  ブロックされる)
-- `coreaudiod` がプラグインをロードするには ad-hoc 署名で十分
+**ただし、プラグインを最後まで実行することはできません。** macOS 15
+ではアウトオブプロセスの Core Audio Driver Service ヘルパーが
+コード署名の妥当性を強制し、macOS の AMFI が ad-hoc 署名のプラグイン
+バイナリを `AppleMobileFileIntegrityError -423` で拒否します — プラグ
+インのコードが実行される前の段階です。GitHub ホストランナーは
+Developer ID 署名を生成できないため、ホスト CI の Tier 3 は「ロードが
+試みられた」ところで止まります。デバイスが列挙されること
+(`system_profiler SPAudioDataType | grep <device-name>`) の確認と
+IO パスの実行は、Developer ID 署名済みバンドルを必要とし、Tier 4 の
+チェックとなります。
 
 `main` へのマージごと、および毎日のスケジュールで実行します。
 
@@ -114,27 +122,50 @@ GitHub は各ランナーのイメージごとにソフトウェアインベン�
 ad-hoc 署名のために追加で Apple Developer Program に加入する必要は
 ありません。
 
-## System Integrity Protection (SIP) の考慮事項
+## System Integrity Protection (SIP) と AMFI の考慮事項
 
-GitHub ホストランナーでは SIP が既定で有効であり、無効化できません
-(`csrutil disable` はリカバリーモードを必要とする)。AudioServerPlugin
-テストへの含意は次のとおりです。
+GitHub ホストの Apple Silicon ランナーは VM 上で動作し、**SIP は無効**
+の状態で提供されます — `csrutil status` は "disabled" を返し、起動
+ログには `AMFI: Booted in a VM` が現れます。ただしこれは有用なレバー
+ではありません。署名のない HAL プラグインを止めているコード署名の
+ゲートは **AMFI** であり、`amfid` がこれを SIP とは独立に強制します。
+SIP が無効でも、ランナーは ad-hoc 署名のプラグインを
+`AppleMobileFileIntegrityError -423` で拒否します。
 
-| 操作 | SIP 下で許可されるか | 備考 |
+| 操作 | 許可されるか | 備考 |
 |---|---|---|
 | `/Library/Audio/Plug-Ins/HAL/` への `.driver` 配置 | はい | `sudo` が必要だがランナーで利用可 |
 | `coreaudiod` の再起動 | はい | `launchctl kill` で実施 |
-| `coreaudiod` が署名のないプラグインをロード | はい | HAL プラグインはカーネル署名要件の対象外 |
-| `coreaudiod` への `lldb` アタッチ | いいえ | システムデーモンへのデバッガアタッチは SIP がブロックする |
-| オーディオデバイス列挙 | はい | 標準 HAL クライアント API |
-| SIP 自体の変更 | いいえ | リカバリーモードのみ |
-| プライベート `coreaudiod` インスタンスの実行 | 部分的 | 動作はするが機能は限定的 |
+| `coreaudiod` がプラグインを発見・ロード試行 | はい | HAL ディレクトリを走査しバンドルを解析する |
+| `coreaudiod` が **ad-hoc 署名**プラグインを最後までロード | **いいえ** | `amfid` が拒否 (`AppleMobileFileIntegrityError -423`)。SIP が無効でも変わらない |
+| `coreaudiod` が **自己署名**プラグインを最後までロード | **いいえ** | 証明書を System キーチェーンに信頼ルートとして登録しても同様に拒否される。`amfid` はそのトラストストアを参照しない |
+| `coreaudiod` が **Developer ID 署名**プラグインをロード | はい | CI では証明書を GitHub Secret 経由で渡した場合のみ可能 |
+| `nvram boot-args` の書き込み (AMFI の `amfi_get_out_of_my_way` ノブ) | 書き込みは成功 | SIP が無効なので書き込み自体は通る — ただし反映には再起動が必要で、ホストランナーはジョブ途中で再起動できない |
+| SIP 自体の変更 | 該当なし | ランナーでは既に無効 |
 
-要点: **SIP は署名のない HAL プラグインのロードを妨げません。**
-`coreaudiod` へのデバッガアタッチを妨げるだけで、これは *デバッグ* に
-影響しても *実行* には影響しません。Tier 3 検証はストックのランナー
-で機能します。CI で発生した問題の詳細デバッグには、SIP を未公開の
-`csrutil` オプションで部分的に無効化したローカルマシンが必要です。
+要点: **AMFI は、署名が Apple 発行の証明書チェーンに連ならないあらゆる
+プラグインの「ロード完了」を妨げます。** macOS 15 ではアウトオブ
+プロセスの Core Audio Driver Service ヘルパーがバイナリを `amfid` に
+渡し、`amfid` が ad-hoc *または*自己署名の署名を
+`AppleMobileFileIntegrityError -423`（"the file is adhoc signed or
+signed by an unknown certificate chain"）で拒否します。`coreaudiod` は
+バンドルを発見してロードを*試み*はします — これがホスト CI の Tier 3
+が検証する内容です — がデバイスは列挙されません。
+
+これは `macos-15` ランナー上で実証済みです。ad-hoc 署名、自己署名
+証明書、その証明書を System キーチェーンに信頼ルートとして登録した
+もの、`DisableLibraryValidation` を、単独および組み合わせて試し、
+すべてのケースが `-423` で止まりました。(`security add-trusted-cert`
+は `codesign --verify` と `spctl` は満たしますが、`amfid` は
+`taskgated-helper: ... no eligible provisioning profiles found` を
+ログに出して依然ロードを拒否します。`amfid` のトラストパスは Apple
+発行の証明書であり、System キーチェーンではありません。)したがって
+プラグインを最後まで実行するには Developer ID 署名済みバンドル — CI へ
+は GitHub Secret 経由で渡す — が必要で、その Secret が用意されるまでは
+Tier 4 のチェックです。(これはプロジェクト当初の調査の訂正です。当初
+は署名のない HAL プラグインは自由にロードできると想定していましたが、
+それは古いモデルでは正しく、macOS 15 の driver-service ヘルパーでは
+正しくなく、SIP の無効化でも解除されません。)
 
 ## GitHub ホストランナーで検証できないこと
 
