@@ -27,3 +27,4 @@ does not get rewritten each time.
 | [0002](0002-driver-trait-type-erasure.md) | The `Driver` trait is generic, erased once at the FFI boundary | Accepted |
 | [0003](0003-single-realtime-context.md) | A single `RealtimeContext` marker, not a family | Accepted |
 | [0004](0004-audiodriverkit-out-of-scope.md) | AudioDriverKit and iOS are out of scope | Accepted |
+| [0005](0005-i18n-policy.md) | Internationalisation policy and file layout | Accepted |
