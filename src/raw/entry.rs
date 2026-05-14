@@ -111,15 +111,42 @@ const E_NOINTERFACE: OSStatus = 0x8000_0004_u32 as OSStatus;
 /// Write a Rust string into a HAL property buffer as a
 /// `CFStringRef`.
 ///
-/// # Status
+/// A text property crosses the ABI as a `CFStringRef` — a
+/// CoreFoundation object pointer, `size_of::<*const ()>()` bytes
+/// wide. This mints one from `text` and writes the pointer into
+/// `out_data`; the HAL takes ownership of the `+1` reference and
+/// releases it.
 ///
-/// Stub. A text property crosses the ABI as a `CFStringRef` — a
-/// CoreFoundation object pointer — and constructing one needs
-/// CoreFoundation. The macOS implementation lands in a follow-up PR;
-/// until then this returns [`OsStatus::UNSPECIFIED`], so the
-/// text-valued properties (plug-in / device name, manufacturer,
-/// device UID) are not yet served. Every other property value
-/// variant is fully wired through [`get_property_data`].
+/// Returns [`OsStatus::BAD_PROPERTY_SIZE`] if `out_data` is null or
+/// `capacity` is smaller than a pointer, and
+/// [`OsStatus::UNSPECIFIED`] if CoreFoundation could not allocate
+/// the string.
+#[cfg(target_os = "macos")]
+fn write_cfstring(text: &str, out_data: *mut c_void, capacity: usize) -> Result<usize, OsStatus> {
+    let needed = core::mem::size_of::<crate::raw::cf::CFStringRef>();
+    if out_data.is_null() || capacity < needed {
+        return Err(OsStatus::BAD_PROPERTY_SIZE);
+    }
+    let cfstr = crate::raw::cf::create_string(text);
+    if cfstr.is_null() {
+        return Err(OsStatus::UNSPECIFIED);
+    }
+    // Safety: `out_data` is non-null and covers at least `needed`
+    // writable bytes (checked above). The HAL takes ownership of the
+    // `+1`-retained `cfstr` and releases it.
+    unsafe { out_data.cast::<crate::raw::cf::CFStringRef>().write(cfstr) };
+    Ok(needed)
+}
+
+/// Write a Rust string into a HAL property buffer as a
+/// `CFStringRef` — the non-macOS stub.
+///
+/// A `CFStringRef` is a CoreFoundation object pointer, and there is
+/// no CoreFoundation off macOS, so this reports
+/// [`OsStatus::UNSPECIFIED`]. The entry points compile and are
+/// unit-tested on every host; the text-property path is exercised
+/// for real only on the macOS CI runner.
+#[cfg(not(target_os = "macos"))]
 fn write_cfstring(
     _text: &str,
     _out_data: *mut c_void,
@@ -1190,11 +1217,30 @@ mod tests {
         assert_eq!(status, OsStatus::UNKNOWN_PROPERTY.as_i32());
     }
 
+    /// The dispatcher always *has* the text properties; whether
+    /// `get_property_data` can *marshal* one depends on the
+    /// platform — only macOS has the CoreFoundation needed to build
+    /// the `CFStringRef`.
+    fn name_property_dispatches_to_text(fixture: &Fixture) {
+        // Safety: `driver_ref` is the live object the fixture built.
+        let object = unsafe { DriverObject::from_ref(fixture.driver_ref) }.unwrap();
+        let runtime = object.runtime();
+        let value = dispatch::get_property_data(
+            runtime.objects(),
+            runtime.info(),
+            &runtime.state(),
+            AudioObjectId::PLUGIN,
+            &crate::property::PropertyAddress::global(PropertySelector::NAME),
+        );
+        assert!(matches!(value, Ok(PropertyValue::Text(_))));
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn text_properties_are_not_yet_served() {
-        // `write_cfstring` is a stub until the macOS CoreFoundation
-        // layer lands; a text property therefore reports
-        // `UNSPECIFIED` rather than a wrong value.
+    fn text_properties_report_unspecified_off_macos() {
+        // `write_cfstring` is the portable stub off macOS — there is
+        // no CoreFoundation to build a `CFStringRef`, so a text
+        // property reports `UNSPECIFIED` rather than a wrong value.
         let fixture = Fixture::new();
         let name = global(PropertySelector::NAME);
         let mut buffer = [0u8; 8];
@@ -1214,20 +1260,48 @@ mod tests {
             )
         };
         assert_eq!(status, OsStatus::UNSPECIFIED.as_i32());
+        name_property_dispatches_to_text(&fixture);
+    }
 
-        // The dispatcher still *has* the property — only the
-        // marshalling is pending.
-        // Safety: `driver_ref` is the live object the fixture built.
-        let object = unsafe { DriverObject::from_ref(fixture.driver_ref) }.unwrap();
-        let runtime = object.runtime();
-        let value = dispatch::get_property_data(
-            runtime.objects(),
-            runtime.info(),
-            &runtime.state(),
-            AudioObjectId::PLUGIN,
-            &crate::property::PropertyAddress::global(PropertySelector::NAME),
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn text_properties_marshal_a_cfstring_on_macos() {
+        // On macOS `write_cfstring` mints a real `CFStringRef`; the
+        // property buffer receives the (non-null) pointer.
+        let fixture = Fixture::new();
+        let name = global(PropertySelector::NAME);
+        let mut cfstr: crate::raw::cf::CFStringRef = core::ptr::null();
+        let mut written: UInt32 = 0;
+        // Safety: `driver_ref` is live; `cfstr` is a valid writable
+        // pointer-sized slot.
+        let status = unsafe {
+            get_property_data(
+                fixture.driver_ref,
+                1,
+                0,
+                &name,
+                0,
+                core::ptr::null(),
+                core::mem::size_of::<crate::raw::cf::CFStringRef>() as UInt32,
+                &mut written,
+                core::ptr::addr_of_mut!(cfstr).cast(),
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+        assert_eq!(
+            written as usize,
+            core::mem::size_of::<crate::raw::cf::CFStringRef>()
         );
-        assert!(matches!(value, Ok(PropertyValue::Text(_))));
+        assert!(
+            !cfstr.is_null(),
+            "the buffer should hold a live CFStringRef"
+        );
+        // The HAL would release this; the test owns it instead.
+        // Safety: `cfstr` is the `+1`-retained string the entry
+        // point just minted.
+        unsafe { crate::raw::cf::release(cfstr) };
+
+        name_property_dispatches_to_text(&fixture);
     }
 
     #[test]

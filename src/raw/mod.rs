@@ -44,6 +44,11 @@ pub mod ring;
 pub mod runtime;
 pub mod vtable;
 
+/// Minimal CoreFoundation FFI for the text-property `CFStringRef`
+/// path. macOS-only — there is no CoreFoundation elsewhere.
+#[cfg(target_os = "macos")]
+pub mod cf;
+
 use std::os::raw::c_void;
 use std::sync::Arc;
 
