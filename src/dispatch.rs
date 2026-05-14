@@ -159,6 +159,71 @@ pub fn is_property_settable(
     ))
 }
 
+/// Write a property's value.
+///
+/// `data` is the raw, native-endian `SetPropertyData` buffer the HAL
+/// supplied. The property must exist on the object and be settable;
+/// the only writable property today is the device's nominal sample
+/// rate, which `data` must carry as a `Float64`.
+///
+/// On success the change is applied to `state`. Returns:
+///
+/// - [`OsStatus::BAD_OBJECT`] if `object_id` is not in the tree,
+/// - [`OsStatus::UNKNOWN_PROPERTY`] if the object lacks the property,
+/// - [`OsStatus::ILLEGAL_OPERATION`] if the property exists but is
+///   read-only,
+/// - [`OsStatus::BAD_PROPERTY_SIZE`] if `data` is too short to hold
+///   the value,
+/// - [`OsStatus::UNSUPPORTED_FORMAT`] if the requested sample rate
+///   is not one the device offers.
+pub fn set_property_data(
+    map: &ObjectMap,
+    info: &DriverInfo,
+    state: &mut DeviceState,
+    object_id: AudioObjectId,
+    address: &PropertyAddress,
+    data: &[u8],
+) -> Result<(), OsStatus> {
+    // Existence + read-only checks. `is_property_settable` reuses the
+    // read path, so an unknown object / property surfaces the right
+    // error here too.
+    if !is_property_settable(map, info, state, object_id, address)? {
+        return Err(OsStatus::ILLEGAL_OPERATION);
+    }
+    // `is_property_settable` returns `true` for exactly one property:
+    // the device's nominal sample rate. The debug assertion documents
+    // that invariant — if the settable set grows, this function must
+    // grow with it.
+    debug_assert_eq!(
+        (
+            map.resolve(object_id),
+            address.selector == PropertySelector::DEVICE_NOMINAL_SAMPLE_RATE
+        ),
+        (Some(Object::Device), true),
+    );
+
+    let rate = read_f64(data)?;
+    // A fixed-rate virtual device offers exactly its spec's nominal
+    // rate; any other request is an unsupported format.
+    if rate != map.spec().sample_rate() {
+        return Err(OsStatus::UNSUPPORTED_FORMAT);
+    }
+    state.sample_rate = rate;
+    Ok(())
+}
+
+/// Read a native-endian `f64` from the head of a HAL property
+/// buffer, or [`OsStatus::BAD_PROPERTY_SIZE`] if `data` is shorter
+/// than eight bytes.
+fn read_f64(data: &[u8]) -> Result<f64, OsStatus> {
+    let bytes: [u8; 8] = data
+        .get(..8)
+        .ok_or(OsStatus::BAD_PROPERTY_SIZE)?
+        .try_into()
+        .expect("slice of length 8 converts to [u8; 8]");
+    Ok(f64::from_ne_bytes(bytes))
+}
+
 /// Number of frames between the device's zero timestamps —
 /// `kAudioDevicePropertyZeroTimeStampPeriod`.
 ///
@@ -812,5 +877,101 @@ mod tests {
         let state = DeviceState::from_spec(&spec);
         assert_eq!(state.sample_rate, 48_000.0);
         assert!(!state.running);
+    }
+
+    #[test]
+    fn set_sample_rate_applies_a_supported_rate() {
+        let (map, info, mut state) = fixture();
+        // The device offers 48 kHz; setting it to 48 kHz succeeds.
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                map.device_id(),
+                &PropertyAddress::global(PropertySelector::DEVICE_NOMINAL_SAMPLE_RATE),
+                &48_000.0_f64.to_ne_bytes(),
+            ),
+            Ok(())
+        );
+        assert_eq!(state.sample_rate, 48_000.0);
+    }
+
+    #[test]
+    fn set_sample_rate_rejects_an_unsupported_rate() {
+        let (map, info, mut state) = fixture();
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                map.device_id(),
+                &PropertyAddress::global(PropertySelector::DEVICE_NOMINAL_SAMPLE_RATE),
+                &96_000.0_f64.to_ne_bytes(),
+            ),
+            Err(OsStatus::UNSUPPORTED_FORMAT)
+        );
+        // The state is left untouched on a rejected set.
+        assert_eq!(state.sample_rate, 48_000.0);
+    }
+
+    #[test]
+    fn set_sample_rate_rejects_an_undersized_buffer() {
+        let (map, info, mut state) = fixture();
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                map.device_id(),
+                &PropertyAddress::global(PropertySelector::DEVICE_NOMINAL_SAMPLE_RATE),
+                &[0u8; 4],
+            ),
+            Err(OsStatus::BAD_PROPERTY_SIZE)
+        );
+    }
+
+    #[test]
+    fn set_read_only_property_is_illegal() {
+        let (map, info, mut state) = fixture();
+        // The device UID is a known property, but read-only.
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                map.device_id(),
+                &PropertyAddress::global(PropertySelector::DEVICE_UID),
+                b"whatever",
+            ),
+            Err(OsStatus::ILLEGAL_OPERATION)
+        );
+    }
+
+    #[test]
+    fn set_rejects_unknown_object_and_property() {
+        let (map, info, mut state) = fixture();
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                AudioObjectId::from_u32(999),
+                &PropertyAddress::global(PropertySelector::DEVICE_NOMINAL_SAMPLE_RATE),
+                &48_000.0_f64.to_ne_bytes(),
+            ),
+            Err(OsStatus::BAD_OBJECT)
+        );
+        assert_eq!(
+            set_property_data(
+                &map,
+                &info,
+                &mut state,
+                map.device_id(),
+                &PropertyAddress::global(PropertySelector::new(*b"zzzz")),
+                &48_000.0_f64.to_ne_bytes(),
+            ),
+            Err(OsStatus::UNKNOWN_PROPERTY)
+        );
     }
 }
