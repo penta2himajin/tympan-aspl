@@ -1,32 +1,34 @@
 //! Low-level FFI to the Core Audio AudioServerPlugin C ABI.
 //!
-//! This module is the sole place that will link `CoreFoundation` and
+//! This module is the sole place that links `CoreFoundation` and
 //! `CoreAudio` and the sole owner of the CFPlugIn `IUnknown`-style
 //! vtable bookkeeping required to expose Rust types as a plug-in
-//! `coreaudiod` can load. It is gated on `cfg(target_os = "macos")`
-//! because none of that machinery exists on other platforms — the
-//! cross-platform layers (`realtime`, `driver`, `device`, `stream`,
-//! `bundle`, …) are deliberately kept FFI-free so their invariants
-//! can be unit-tested on any host.
+//! `coreaudiod` can load.
 //!
-//! ## Status
+//! It is split so that the parts that *can* be tested off macOS are:
 //!
-//! Stub. The cross-platform foundation lands first; the FFI bridge
-//! is built on top of it in a follow-up PR. When it does, this
-//! module gains the submodules sketched in `docs/architecture.md`:
+//! - [`abi`] — hand-written `#[repr(C)]` mirrors of the
+//!   AudioServerPlugin C structs and the
+//!   `AudioServerPlugInDriverInterface` vtable. Plain data, no FFI,
+//!   compiles and is layout-tested on every host.
+//! - [`marshal`] — conversions between the [`abi`] C types and the
+//!   framework's safe Rust types. Pure byte manipulation, no FFI,
+//!   unit-tested on every host.
 //!
-//! - `vtable` — CFPlugIn `IUnknown` vtable construction and the
-//!   `AudioServerPlugInDriverInterface` function-pointer table.
-//! - `selectors` — the raw property-selector / scope constants,
-//!   cross-checked against `coreaudio-sys` with `static_assertions`.
-//! - `host` — the `AudioServerPlugInHostInterface` side, i.e. the
-//!   callbacks `coreaudiod` hands the plug-in.
+//! The genuinely macOS-only machinery — the live `extern "C"` entry
+//! points, the CoreFoundation marshalling of `CFStringRef` values,
+//! the `coreaudio-sys` layout cross-checks, and the host-interface
+//! wrapper — lands on top of these two in a follow-up PR, gated on
+//! `cfg(target_os = "macos")`.
 //!
 //! Users of `tympan-aspl` are not expected to touch this module; the
 //! public API in the crate root wraps it. It is `pub` only for the
 //! framework's own [`plugin_entry!`](crate::plugin_entry) macro and
 //! for advanced users who need to bypass the higher-level
 //! abstractions.
+
+pub mod abi;
+pub mod marshal;
 
 use std::os::raw::c_void;
 use std::sync::Arc;

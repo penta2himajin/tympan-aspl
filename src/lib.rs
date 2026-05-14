@@ -17,10 +17,11 @@
 //! The crate is built bottom-up in conceptual layers, isolated by
 //! module boundary:
 //!
-//! - `raw` — the low-level FFI to the AudioServerPlugin C ABI and
-//!   the CFPlugIn vtable bookkeeping. macOS-only
-//!   (`cfg(target_os = "macos")`). *Stub at this stage* — the
-//!   cross-platform foundation lands first; see the module docs.
+//! - [`raw`] — the low-level FFI to the AudioServerPlugin C ABI.
+//!   Its ABI type definitions ([`raw::abi`]) and marshalling
+//!   ([`raw::marshal`]) are plain data, compiled and tested on every
+//!   host; only the live `extern "C"` entry points and
+//!   CoreFoundation calls (a later PR) are macOS-gated.
 //! - [`realtime`] — allocation-free, lock-free primitives for the
 //!   `IOProc` realtime callback. Cross-platform, so the realtime
 //!   invariants are unit-testable on any host.
@@ -65,7 +66,10 @@ pub mod property;
 pub mod realtime;
 pub mod stream;
 
-#[cfg(target_os = "macos")]
+// The `raw` module's ABI type definitions and marshalling are
+// plain data — they compile and are tested on every host. Only its
+// live `extern "C"` entry points and CoreFoundation calls (a later
+// PR) are `cfg(target_os = "macos")`-gated, from within the module.
 pub mod raw;
 
 // `plugin_entry!` is defined on every platform so its documentation
