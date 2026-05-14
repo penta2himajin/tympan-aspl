@@ -220,16 +220,17 @@ These services are appropriate when tier 4 verification must run
 automatically as part of pipelines, and a local developer machine is
 insufficient (e.g., for release validation).
 
-## Recommended workflow files
+## Workflow files
 
-The intended `.github/workflows/` layout once implementation begins:
+The `.github/workflows/` layout (`tier1`–`tier3` are present;
+`release.yml` is still planned):
 
 ```
 .github/workflows/
 ├── tier1.yml           # cargo build/test/clippy/fmt/doc on every PR
 ├── tier2.yml           # bundle and ABI verification on every PR
 ├── tier3.yml           # HAL load verification on merge to main + nightly
-└── release.yml         # Tagged release publishing (cargo publish dry-run)
+└── release.yml         # Tagged release publishing (cargo publish dry-run) — planned
 ```
 
 Tier 4 is intentionally omitted from the workflow set; it is performed

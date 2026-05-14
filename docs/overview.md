@@ -80,13 +80,18 @@ AudioServerPlugin used in Apple sample code and existing libraries
 
 ## Status
 
-**Design phase.** As of the initial commit:
+**Implemented.** The framework crate is built out across `src/` —
+the `raw` FFI layer (CFPlugIn factory, vtable, entry points,
+marshalling), the safe object/property/dispatch layers, the
+`realtime` primitives, and the `bundle` Info.plist helpers — with a
+`minimal-loopback` reference example. The CI tiers in
+[`testing.md`](testing.md) (static, bundle/ABI, `coreaudiod`
+HAL-load) run on every change.
 
-- No source code in `src/`
 - API design documented in [`architecture.md`](architecture.md)
 - Reference material gathered in [`references.md`](references.md)
-
-Implementation will begin once the API design is reviewed and stabilised.
+- Verification strategy in [`testing.md`](testing.md) and
+  [`decisions/0001-ci-verification-strategy.md`](decisions/0001-ci-verification-strategy.md)
 
 ## Target audience
 
