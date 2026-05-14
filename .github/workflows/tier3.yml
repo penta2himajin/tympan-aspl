@@ -105,3 +105,44 @@ jobs:
           echo "--- full SPAudioDataType output ---"
           system_profiler SPAudioDataType || true
           exit 1
+
+      - name: Capture coreaudiod diagnostics on failure
+        # The enumeration step gives only "device absent". When it
+        # fails, dump everything that explains *why* `coreaudiod`
+        # did not load (or rejected) the plug-in: the daemon's own
+        # log, the installed bundle's structure and signature, the
+        # cdylib's Mach-O type / linkage / exported symbols.
+        if: ${{ failure() }}
+        run: |
+          BUNDLE=/Library/Audio/Plug-Ins/HAL/MinimalLoopback.driver
+          EXEC="$BUNDLE/Contents/MacOS/MinimalLoopback"
+
+          echo "::group::coreaudiod unified log (last 4 min)"
+          log show --last 4m --info --debug \
+            --predicate 'process == "coreaudiod"' 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::log lines mentioning the plug-in"
+          log show --last 4m --info --debug \
+            --predicate 'eventMessage CONTAINS[c] "loopback" OR eventMessage CONTAINS[c] "tympan" OR eventMessage CONTAINS[c] "MinimalLoopback"' \
+            2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::installed bundle tree"
+          ls -laR "$BUNDLE" || true
+          echo "::endgroup::"
+
+          echo "::group::installed Info.plist"
+          plutil -p "$BUNDLE/Contents/Info.plist" || true
+          echo "::endgroup::"
+
+          echo "::group::cdylib Mach-O type, linkage, symbols"
+          file "$EXEC" || true
+          otool -hv "$EXEC" || true
+          otool -L "$EXEC" || true
+          nm -gU "$EXEC" || true
+          echo "::endgroup::"
+
+          echo "::group::bundle code signature"
+          codesign -dvvv "$BUNDLE" 2>&1 || true
+          echo "::endgroup::"
