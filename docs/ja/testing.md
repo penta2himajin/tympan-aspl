@@ -221,16 +221,17 @@ Tier 4 検証を自動化する必要がある場合の選択肢は以下のと�
 する必要があり、ローカルの開発者マシンでは不十分な場合 (例: リリース
 検証) に適しています。
 
-## 推奨されるワークフローファイル
+## ワークフローファイル
 
-実装開始後の `.github/workflows/` 構成想定:
+`.github/workflows/` の構成（`tier1`〜`tier3` は配置済み、`release.yml`
+は今後の予定）:
 
 ```
 .github/workflows/
 ├── tier1.yml           # 全 PR で cargo build/test/clippy/fmt/doc
 ├── tier2.yml           # 全 PR でバンドルおよび ABI 検証
 ├── tier3.yml           # main へのマージおよび毎日で HAL ロード検証
-└── release.yml         # タグ付きリリース公開 (cargo publish dry-run)
+└── release.yml         # タグ付きリリース公開 (cargo publish dry-run) — 予定
 ```
 
 Tier 4 はワークフローセットから意図的に除外しています。手動または
@@ -259,7 +260,23 @@ lint 群を定義し、リアルタイムコード経路にリアルタイム非
 
 ## 実装ステータス
 
-CI はまだ構成されていません。実装の最初のソースコードコミットと同時に
-構築する計画です。初期 CI 設定は Tier 1 および Tier 2 を対象とし、
-ビルド可能な最初のサンプルプラグインが整い次第 Tier 3 を追加します。
-Tier 4 は当面手動のままとします。
+Tier 1・2・3 が配線済みです。
+
+- `tier1.yml` — 全プルリクエストで build、test、`clippy`、`fmt`、
+  `doc`、`cargo deny`、および `static mut` 不在の grep。
+- `tier2.yml` — 全プルリクエストで、コミット済みおよび生成された
+  Info.plist の `plutil -lint`、サンプル `.driver` cdylib のビルド、
+  `nm` によるファクトリシンボル確認、`lipo -info`、`.driver` バンドル
+  組み立て + ad-hoc `codesign`。
+- `tier3.yml` — `coreaudiod` プラグインロード検証。`.driver` を
+  インストールし、`coreaudiod` を再起動し、`coreaudiod` の unified log
+  からプラグインを発見してロードを*試みた*ことを確認します。デバイス
+  列挙までは表明しません。ホストランナーでは AMFI が ad-hoc 署名の
+  バイナリを拒否するためです（上記 SIP セクション参照）。ADR 0001 に
+  従い、`main` へのマージ・毎日のスケジュール・手動ディスパッチで
+  実行し、プルリクエストでは実行しません。
+
+Tier 4 はリリース前の手動チェックリストのままで、AMFI のコード署名
+制約がホスト CI から押し出すチェック — Developer ID 署名済み
+`.driver` の完全ロード、`system_profiler` によるデバイス列挙の確認、
+IO パスの実行 — も担います。

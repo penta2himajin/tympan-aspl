@@ -83,14 +83,20 @@ AudioServerPlugin API は C ヘッダ (`<CoreAudio/AudioServerPlugIn.h>`) で
 
 ## ステータス
 
-**設計フェーズ。** 初期コミット時点では次のとおりです。
+**実装済み。** フレームワーククレートは `src/` 全体に実装されています
+— `raw` FFI 層（CFPlugIn ファクトリ、vtable、エントリポイント、
+マーシャリング）、安全なオブジェクト／プロパティ／ディスパッチ層、
+`realtime` プリミティブ、`bundle` Info.plist ヘルパー — に加えて
+`minimal-loopback` のリファレンス例があります。
+[`testing.md`](testing.md) の CI tier（静的検証、バンドル／ABI 検証、
+`coreaudiod` HAL ロード検証）が変更ごとに実行されます。
 
-- `src/` にソースコードは存在しません
 - API 設計は [`architecture.md`](architecture.md) にドキュメント化されて
   います
 - 参考資料は [`references.md`](references.md) にまとめています
-
-API 設計のレビューが進み安定化したのちに、実装を開始します。
+- 検証戦略は [`testing.md`](testing.md) および
+  [`decisions/0001-ci-verification-strategy.md`](decisions/0001-ci-verification-strategy.md)
+  にあります
 
 ## ターゲット利用者
 

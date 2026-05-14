@@ -11,21 +11,15 @@ Detailed design lives under @docs/overview.md and @docs/architecture.md.
 
 ## Project Structure
 
-Currently in design phase. No source code yet.
-
-```
-docs/                    # Design and references
-.github/                 # Issue/PR templates
-```
-
-Once implementation begins, the layout will follow:
-
 ```
 src/                     # Public API (high-level, safe)
 src/raw/                 # Low-level FFI to AudioServerPlugin.h
 src/realtime/            # Realtime-safe primitives (lock-free, alloc-free)
-examples/                # Reference plugins (e.g. minimal virtual sink)
+src/bundle/              # .driver bundle layout and Info.plist generation
+examples/                # Reference plugins (e.g. minimal-loopback)
 tests/                   # Integration tests
+docs/                    # Design, architecture, decisions, references
+.github/                 # CI workflows, issue/PR templates
 ```
 
 ## Development Setup
@@ -42,8 +36,6 @@ Optional:
   consuming plugins. Not needed for library development itself.
 
 ## Build & Test
-
-Once implementation starts:
 
 ```bash
 cargo build

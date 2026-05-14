@@ -179,7 +179,11 @@ forwards entries to the standard `log` crate.
 
 ## Open questions
 
-Resolved during design phase:
+Carried into implementation without formal resolution. The code
+reflects provisional answers (e.g. both a `dyn AnyDriver` path and a
+generic `DriverInstance<D>` exist; `RealtimeContext` is a single
+marker), but these are not yet captured as ADRs under
+`docs/decisions/`:
 
 - [ ] Should `Driver` be an object-safe trait (allowing dynamic dispatch)
   or a generic parameter (allowing zero-cost specialisation)?
@@ -190,5 +194,5 @@ Resolved during design phase:
 - [ ] How does the framework interact with AudioDriverKit (DriverKit-based
   drivers in macOS 11+)? Two separate code paths, or a unified API?
 
-These will be resolved before implementation begins. Decisions will be
-recorded in `docs/decisions/` (to be created).
+`docs/decisions/` now exists; promoting these provisional answers to
+ADRs is tracked as follow-up work.
