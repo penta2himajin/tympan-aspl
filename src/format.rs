@@ -23,6 +23,12 @@
 /// practice.
 pub const FORMAT_LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
 
+/// The on-the-wire size of a C `AudioStreamBasicDescription`: one
+/// `f64` plus seven `u32`s plus the trailing reserved `u32` —
+/// `8 + 8 * 4 = 40` bytes. The property dispatcher reports this as
+/// the value size for the stream-format properties.
+pub const ASBD_SIZE: usize = 40;
+
 /// Linear-PCM format flags, mirroring `kAudioFormatFlag*` from
 /// `<CoreAudio/CoreAudioBaseTypes.h>`.
 pub mod flags {

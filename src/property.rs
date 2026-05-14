@@ -13,9 +13,11 @@
 //! - The [`PropertyElement`] narrows it further to a channel; `0`
 //!   ([`PropertyElement::MAIN`]) addresses the object as a whole.
 //!
-//! This module is cross-platform: the address triple is plain data,
-//! and the framework's dispatch logic (added in a later PR) matches
-//! on these values without touching any FFI.
+//! This module is cross-platform: the address triple, the typed
+//! [`PropertyValue`], and the [`crate::dispatch`] logic that maps
+//! between them are all plain data — no FFI.
+
+extern crate alloc;
 
 use crate::fourcc::FourCharCode;
 
@@ -251,6 +253,126 @@ impl PropertyAddress {
     }
 }
 
+/// A `(min, max)` inclusive range of `f64` values.
+///
+/// Cross-platform mirror of the C `AudioValueRange` struct. Core
+/// Audio uses arrays of these for properties such as
+/// `kAudioDevicePropertyAvailableNominalSampleRates`; a fixed-rate
+/// device reports a single range whose `min` equals its `max`.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct ValueRange {
+    /// Inclusive lower bound (`mMinimum`).
+    pub min: f64,
+    /// Inclusive upper bound (`mMaximum`).
+    pub max: f64,
+}
+
+impl ValueRange {
+    /// The on-the-wire size of one `AudioValueRange` — two `f64`s.
+    pub const SIZE: usize = 16;
+
+    /// A range covering exactly the single value `v` (`min == max`).
+    #[inline]
+    #[must_use]
+    pub const fn point(v: f64) -> Self {
+        Self { min: v, max: v }
+    }
+
+    /// A `min..=max` range.
+    #[inline]
+    #[must_use]
+    pub const fn new(min: f64, max: f64) -> Self {
+        Self { min, max }
+    }
+
+    /// `true` iff `value` falls within `min..=max`.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, value: f64) -> bool {
+        value >= self.min && value <= self.max
+    }
+}
+
+/// A typed property value crossing the Core Audio property protocol.
+///
+/// The HAL's `GetPropertyData` / `SetPropertyData` calls move opaque
+/// byte buffers; [`PropertyValue`] is the framework's typed
+/// intermediate. The property dispatcher produces one of these for a
+/// read, and [`Self::byte_size`] answers the HAL's separate
+/// `GetPropertyDataSize` query without re-deriving the value.
+///
+/// The variants cover the value shapes the standard plug-in,
+/// device, and stream properties use; the FFI layer (landing in a
+/// later PR) marshals each variant to and from the matching C type.
+#[derive(Clone, PartialEq, Debug)]
+pub enum PropertyValue {
+    /// A 32-bit unsigned integer — class ids, channel counts,
+    /// boolean flags expressed as `0` / `1`, latencies, and the
+    /// like.
+    U32(u32),
+    /// An [`AudioObjectId`](crate::object::AudioObjectId) — the
+    /// `kAudioObjectPropertyOwner` value and similar single-object
+    /// references.
+    ObjectId(crate::object::AudioObjectId),
+    /// A 64-bit float — `kAudioDevicePropertyNominalSampleRate` and
+    /// other scalar rates.
+    F64(f64),
+    /// A UTF-8 string, marshalled to a `CFStringRef` at the FFI
+    /// boundary — device names, manufacturer strings, UIDs.
+    Text(alloc::string::String),
+    /// A list of [`AudioObjectId`](crate::object::AudioObjectId)s —
+    /// device lists, stream lists, owned-object lists.
+    ObjectList(alloc::vec::Vec<crate::object::AudioObjectId>),
+    /// A stream format, marshalled to an `AudioStreamBasicDescription`
+    /// at the FFI boundary.
+    Format(crate::format::StreamFormat),
+    /// A list of [`ValueRange`]s, marshalled to an `AudioValueRange`
+    /// array — `kAudioDevicePropertyAvailableNominalSampleRates` and
+    /// similar.
+    RangeList(alloc::vec::Vec<ValueRange>),
+}
+
+impl PropertyValue {
+    /// The number of bytes this value occupies in the HAL's
+    /// property buffer — the answer to a `GetPropertyDataSize`
+    /// query.
+    ///
+    /// - [`Self::U32`] / [`Self::ObjectId`] — 4 bytes.
+    /// - [`Self::F64`] — 8 bytes.
+    /// - [`Self::Text`] — the size of a `CFStringRef`, i.e. one
+    ///   pointer. Core Audio string properties always report
+    ///   `sizeof(CFStringRef)` regardless of the string's length.
+    /// - [`Self::ObjectList`] — 4 bytes per `AudioObjectID`.
+    /// - [`Self::Format`] — 40 bytes, the size of an
+    ///   `AudioStreamBasicDescription`.
+    /// - [`Self::RangeList`] — 16 bytes per `AudioValueRange`.
+    #[must_use]
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Self::U32(_) | Self::ObjectId(_) => core::mem::size_of::<u32>(),
+            Self::F64(_) => core::mem::size_of::<f64>(),
+            // A CFString property's value *is* a `CFStringRef` — a
+            // single pointer — no matter how long the string is.
+            Self::Text(_) => core::mem::size_of::<*const ()>(),
+            Self::ObjectList(ids) => ids.len() * core::mem::size_of::<u32>(),
+            Self::Format(_) => crate::format::ASBD_SIZE,
+            Self::RangeList(ranges) => ranges.len() * ValueRange::SIZE,
+        }
+    }
+
+    /// `true` iff this value carries no elements — an empty
+    /// [`Self::ObjectList`] or [`Self::RangeList`]. Scalar variants
+    /// are never empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::ObjectList(ids) => ids.is_empty(),
+            Self::RangeList(ranges) => ranges.is_empty(),
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +471,74 @@ mod tests {
         assert_eq!(size_of::<PropertySelector>(), size_of::<u32>());
         assert_eq!(size_of::<PropertyScope>(), size_of::<u32>());
         assert_eq!(size_of::<PropertyElement>(), size_of::<u32>());
+    }
+
+    #[test]
+    fn value_range_point_has_equal_bounds() {
+        let r = ValueRange::point(48_000.0);
+        assert_eq!(r.min, 48_000.0);
+        assert_eq!(r.max, 48_000.0);
+        assert!(r.contains(48_000.0));
+        assert!(!r.contains(44_100.0));
+    }
+
+    #[test]
+    fn value_range_contains_is_inclusive() {
+        let r = ValueRange::new(44_100.0, 96_000.0);
+        assert!(r.contains(44_100.0));
+        assert!(r.contains(96_000.0));
+        assert!(r.contains(48_000.0));
+        assert!(!r.contains(44_099.0));
+        assert!(!r.contains(96_001.0));
+    }
+
+    #[test]
+    fn property_value_byte_sizes_match_the_c_types() {
+        use crate::format::StreamFormat;
+        use crate::object::AudioObjectId;
+
+        assert_eq!(PropertyValue::U32(0).byte_size(), 4);
+        assert_eq!(
+            PropertyValue::ObjectId(AudioObjectId::PLUGIN).byte_size(),
+            4
+        );
+        assert_eq!(PropertyValue::F64(0.0).byte_size(), 8);
+        // A CFString property reports the size of a pointer,
+        // independent of the string's length.
+        assert_eq!(
+            PropertyValue::Text("x".into()).byte_size(),
+            PropertyValue::Text("a much longer string".into()).byte_size()
+        );
+        assert_eq!(
+            PropertyValue::Text(alloc::string::String::new()).byte_size(),
+            core::mem::size_of::<*const ()>()
+        );
+        assert_eq!(
+            PropertyValue::ObjectList(alloc::vec![
+                AudioObjectId::from_u32(2),
+                AudioObjectId::from_u32(3)
+            ])
+            .byte_size(),
+            8
+        );
+        assert_eq!(
+            PropertyValue::Format(StreamFormat::float32(48_000.0, 2)).byte_size(),
+            40
+        );
+        assert_eq!(
+            PropertyValue::RangeList(alloc::vec![ValueRange::point(48_000.0)]).byte_size(),
+            16
+        );
+    }
+
+    #[test]
+    fn property_value_is_empty_only_for_empty_lists() {
+        use crate::object::AudioObjectId;
+        assert!(PropertyValue::ObjectList(alloc::vec![]).is_empty());
+        assert!(PropertyValue::RangeList(alloc::vec![]).is_empty());
+        assert!(!PropertyValue::ObjectList(alloc::vec![AudioObjectId::PLUGIN]).is_empty());
+        assert!(!PropertyValue::U32(0).is_empty());
+        assert!(!PropertyValue::F64(0.0).is_empty());
+        assert!(!PropertyValue::Text(alloc::string::String::new()).is_empty());
     }
 }
