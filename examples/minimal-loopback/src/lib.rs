@@ -19,20 +19,27 @@
 //! - A realtime-safe `process_io` body: a single `copy_from_slice`,
 //!   no allocation, no locks.
 //!
-//! ## Building the `.driver` bundle
+//! ## The `.driver` bundle
 //!
-//! This crate is an `rlib` today — the cross-platform `Driver`
-//! implementation builds and is unit-tested on every host. Producing
-//! the loadable `MinimalLoopback.driver` bundle needs two things
-//! that land with the `raw` FFI bridge (see
-//! `docs/decisions/0001-ci-verification-strategy.md`):
+//! The crate builds as a `cdylib`: [`plugin_entry!`] emits the
+//! `TympanAsplDriverFactory` CFPlugIn entry point that `coreaudiod`
+//! resolves. Wrapped with the committed `Info.plist`, the cdylib is
+//! the loadable `MinimalLoopback.driver` bundle:
 //!
-//! 1. switching `crate-type` to `["cdylib"]` in `Cargo.toml`, and
-//! 2. adding `tympan_aspl::plugin_entry!(MinimalLoopback);` at this
-//!    crate's root to emit the CFPlugIn factory symbol.
+//! ```text
+//! MinimalLoopback.driver/
+//! └── Contents/
+//!     ├── Info.plist          ← committed alongside this file
+//!     └── MacOS/
+//!         └── MinimalLoopback ← the built cdylib
+//! ```
 //!
-//! The committed `Info.plist` alongside this file already describes
-//! the intended bundle, and Tier 2 CI `plutil`-lints it.
+//! Tier 2 CI assembles exactly that layout, `plutil`-lints the
+//! plist, and `nm`-checks the factory symbol. The crate is also an
+//! `rlib` so its unit tests link the [`Driver`] implementation
+//! directly.
+//!
+//! [`plugin_entry!`]: tympan_aspl::plugin_entry
 
 use tympan_aspl::{DeviceSpec, Driver, IoBuffer, RealtimeContext, StreamFormat, StreamSpec};
 
@@ -84,6 +91,11 @@ impl Driver for MinimalLoopback {
         buffer.output[n..].fill(0.0);
     }
 }
+
+// Emit the `TympanAsplDriverFactory` CFPlugIn factory entry point —
+// the symbol `coreaudiod` resolves from the bundle's `Info.plist`
+// and calls to instantiate the plug-in. One invocation per cdylib.
+tympan_aspl::plugin_entry!(MinimalLoopback);
 
 #[cfg(test)]
 mod tests {
