@@ -41,6 +41,7 @@ use crate::raw::abi::{
     AudioServerPlugInHostRef, Boolean, CFUUIDBytes, OSStatus, UInt32,
 };
 use crate::raw::marshal;
+use crate::raw::platform;
 use crate::raw::runtime::DriverObject;
 
 /// `IUnknownUUID` — `{00000000-0000-0000-C000-000000000046}`. The
@@ -249,8 +250,8 @@ pub unsafe extern "C" fn initialize(
     guard(|| OsStatus::from(runtime.driver().initialize())).as_i32()
 }
 
-/// `StartIO` — runs the user driver's `start_io` and marks the
-/// device running.
+/// `StartIO` — runs the user driver's `start_io`, anchors the
+/// device clock, and marks the device running.
 ///
 /// # Safety
 ///
@@ -269,12 +270,15 @@ pub unsafe extern "C" fn start_io(
     let status = guard(|| OsStatus::from(runtime.driver().start_io()));
     if status.is_ok() {
         runtime.state().running = true;
+        // Anchor the zero-timestamp clock at the moment IO starts,
+        // so `GetZeroTimeStamp` reports a timeline rooted here.
+        runtime.clock().start(platform::host_time_now());
     }
     status.as_i32()
 }
 
-/// `StopIO` — runs the user driver's `stop_io` and clears the
-/// running flag.
+/// `StopIO` — runs the user driver's `stop_io`, halts the device
+/// clock, and clears the running flag.
 ///
 /// # Safety
 ///
@@ -293,8 +297,155 @@ pub unsafe extern "C" fn stop_io(
     let status = guard(|| OsStatus::from(runtime.driver().stop_io()));
     if status.is_ok() {
         runtime.state().running = false;
+        runtime.clock().stop();
     }
     status.as_i32()
+}
+
+/// `GetZeroTimeStamp` — report the device's clock anchor for the
+/// current IO cycle.
+///
+/// Reads the host clock, asks the device's [`DeviceClock`] for the
+/// most recent zero-timestamp-period boundary, and writes the
+/// sample-time / host-time / seed triple into the HAL's out
+/// pointers.
+///
+/// [`DeviceClock`]: crate::raw::clock::DeviceClock
+///
+/// # Safety
+///
+/// Called by the HAL across the C ABI. `driver` must be a live
+/// driver ref; `out_sample_time`, `out_host_time`, and `out_seed`
+/// must each be a valid writable pointer (or null).
+pub unsafe extern "C" fn get_zero_time_stamp(
+    driver: AudioServerPlugInDriverRef,
+    _device_id: AudioObjectID,
+    _client_id: UInt32,
+    out_sample_time: *mut crate::raw::abi::Float64,
+    out_host_time: *mut crate::raw::abi::UInt64,
+    out_seed: *mut crate::raw::abi::UInt64,
+) -> OSStatus {
+    // Safety: the HAL passes a live driver ref.
+    let Some(object) = (unsafe { DriverObject::from_ref(driver) }) else {
+        return OsStatus::BAD_OBJECT.as_i32();
+    };
+    let runtime = object.runtime();
+    // The zero-timestamp period is the device's nominal sample rate
+    // worth of frames — a one-second ring (see `dispatch`).
+    let period_frames = runtime.objects().spec().sample_rate();
+    let sample_rate = runtime.state().sample_rate;
+    let host_ticks_per_period = platform::host_ticks_per_period(period_frames, sample_rate);
+    let now = platform::host_time_now();
+
+    let Some(timestamp) = runtime
+        .clock()
+        .zero_timestamp(now, host_ticks_per_period, period_frames)
+    else {
+        // `GetZeroTimeStamp` is only legal while the device is
+        // running; a stopped clock means the HAL called it out of
+        // sequence.
+        return OsStatus::NOT_RUNNING.as_i32();
+    };
+
+    if !out_sample_time.is_null() {
+        // Safety: caller guarantees the pointer is writable.
+        unsafe { *out_sample_time = timestamp.sample_time };
+    }
+    if !out_host_time.is_null() {
+        // Safety: caller guarantees the pointer is writable.
+        unsafe { *out_host_time = timestamp.host_time };
+    }
+    if !out_seed.is_null() {
+        // Safety: caller guarantees the pointer is writable.
+        unsafe { *out_seed = timestamp.seed };
+    }
+    OsStatus::OK.as_i32()
+}
+
+/// `WillDoIOOperation` — tell the HAL whether the framework handles
+/// `operation_id`.
+///
+/// The framework does not yet move audio: the realtime data path
+/// (`DoIOOperation`) lands in a follow-up PR. Until then this
+/// answers "no" to every operation, so the HAL drives the device's
+/// clock without expecting the plug-in to read or write samples —
+/// the device runs and produces silence.
+///
+/// # Safety
+///
+/// Called by the HAL across the C ABI. `driver` must be a live
+/// driver ref; `out_will_do` and `out_will_do_in_place` must each
+/// be a valid writable `*mut Boolean` (or null).
+pub unsafe extern "C" fn will_do_io_operation(
+    driver: AudioServerPlugInDriverRef,
+    _device_id: AudioObjectID,
+    _client_id: UInt32,
+    _operation_id: UInt32,
+    out_will_do: *mut Boolean,
+    out_will_do_in_place: *mut Boolean,
+) -> OSStatus {
+    // Safety: the HAL passes a live driver ref.
+    let Some(_object) = (unsafe { DriverObject::from_ref(driver) }) else {
+        return OsStatus::BAD_OBJECT.as_i32();
+    };
+    if !out_will_do.is_null() {
+        // Safety: caller guarantees the pointer is writable.
+        unsafe { *out_will_do = 0 };
+    }
+    if !out_will_do_in_place.is_null() {
+        // Safety: caller guarantees the pointer is writable.
+        unsafe { *out_will_do_in_place = 1 };
+    }
+    OsStatus::OK.as_i32()
+}
+
+/// `BeginIOOperation` — the HAL is about to run one IO operation.
+///
+/// A no-op for the framework's virtual device: there is no
+/// per-operation setup to do. Validates the driver ref and returns
+/// success.
+///
+/// # Safety
+///
+/// Called by the HAL across the C ABI. `driver` must be a live
+/// driver ref; `io_cycle_info` may be null.
+pub unsafe extern "C" fn begin_io_operation(
+    driver: AudioServerPlugInDriverRef,
+    _device_id: AudioObjectID,
+    _client_id: UInt32,
+    _operation_id: UInt32,
+    _io_buffer_frame_size: UInt32,
+    _io_cycle_info: *const crate::raw::abi::AudioServerPlugInIOCycleInfo,
+) -> OSStatus {
+    // Safety: the HAL passes a live driver ref.
+    match unsafe { DriverObject::from_ref(driver) } {
+        Some(_) => OsStatus::OK.as_i32(),
+        None => OsStatus::BAD_OBJECT.as_i32(),
+    }
+}
+
+/// `EndIOOperation` — the HAL has finished one IO operation.
+///
+/// The counterpart of [`begin_io_operation`]; also a no-op for the
+/// virtual device.
+///
+/// # Safety
+///
+/// Called by the HAL across the C ABI. `driver` must be a live
+/// driver ref; `io_cycle_info` may be null.
+pub unsafe extern "C" fn end_io_operation(
+    driver: AudioServerPlugInDriverRef,
+    _device_id: AudioObjectID,
+    _client_id: UInt32,
+    _operation_id: UInt32,
+    _io_buffer_frame_size: UInt32,
+    _io_cycle_info: *const crate::raw::abi::AudioServerPlugInIOCycleInfo,
+) -> OSStatus {
+    // Safety: the HAL passes a live driver ref.
+    match unsafe { DriverObject::from_ref(driver) } {
+        Some(_) => OsStatus::OK.as_i32(),
+        None => OsStatus::BAD_OBJECT.as_i32(),
+    }
 }
 
 /// `AddDeviceClient` — a process opened one of the plug-in's
@@ -952,6 +1103,168 @@ mod tests {
             assert_eq!(
                 remove_device_client(fixture.driver_ref, 2, core::ptr::null()),
                 OsStatus::OK.as_i32()
+            );
+        }
+    }
+
+    #[test]
+    fn start_io_anchors_the_clock_and_stop_io_halts_it() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is the live object the fixture built.
+        let object = unsafe { DriverObject::from_ref(fixture.driver_ref) }.unwrap();
+        assert!(!object.runtime().clock().is_running());
+
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            assert_eq!(start_io(fixture.driver_ref, 2, 0), OsStatus::OK.as_i32());
+        }
+        assert!(object.runtime().clock().is_running());
+        assert_eq!(object.runtime().clock().seed(), 1);
+
+        // Safety: `driver_ref` is live.
+        unsafe {
+            assert_eq!(stop_io(fixture.driver_ref, 2, 0), OsStatus::OK.as_i32());
+        }
+        assert!(!object.runtime().clock().is_running());
+    }
+
+    #[test]
+    fn get_zero_time_stamp_requires_a_running_device() {
+        let fixture = Fixture::new();
+        let mut sample_time = 0.0;
+        let mut host_time = 0u64;
+        let mut seed = 0u64;
+        // Before `StartIO` the clock is stopped — out of sequence.
+        // Safety: `driver_ref` is live; the out-pointers are valid.
+        let status = unsafe {
+            get_zero_time_stamp(
+                fixture.driver_ref,
+                2,
+                0,
+                &mut sample_time,
+                &mut host_time,
+                &mut seed,
+            )
+        };
+        assert_eq!(status, OsStatus::NOT_RUNNING.as_i32());
+    }
+
+    #[test]
+    fn get_zero_time_stamp_reports_a_timeline_once_running() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+        }
+
+        let mut sample_time = -1.0;
+        let mut host_time = 0u64;
+        let mut seed = 0u64;
+        // Safety: `driver_ref` is live; the out-pointers are valid.
+        let status = unsafe {
+            get_zero_time_stamp(
+                fixture.driver_ref,
+                2,
+                0,
+                &mut sample_time,
+                &mut host_time,
+                &mut seed,
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+        // The timeline starts at or after period zero, and the seed
+        // is the one `StartIO` established.
+        assert!(sample_time >= 0.0);
+        assert_eq!(seed, 1);
+    }
+
+    #[test]
+    fn get_zero_time_stamp_tolerates_null_out_pointers() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live.
+        unsafe {
+            initialize(fixture.driver_ref, core::ptr::null_mut());
+            start_io(fixture.driver_ref, 2, 0);
+            // Every out-pointer null: the entry point must not
+            // dereference them.
+            assert_eq!(
+                get_zero_time_stamp(
+                    fixture.driver_ref,
+                    2,
+                    0,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ),
+                OsStatus::OK.as_i32()
+            );
+        }
+    }
+
+    #[test]
+    fn will_do_io_operation_declines_every_operation_for_now() {
+        let fixture = Fixture::new();
+        let mut will_do: Boolean = 0xFF;
+        let mut will_do_in_place: Boolean = 0xFF;
+        // Safety: `driver_ref` is live; the out-pointers are valid.
+        let status = unsafe {
+            will_do_io_operation(
+                fixture.driver_ref,
+                2,
+                0,
+                crate::io::IoOperation::PROCESS_OUTPUT.code().as_u32(),
+                &mut will_do,
+                &mut will_do_in_place,
+            )
+        };
+        assert_eq!(status, OsStatus::OK.as_i32());
+        // The data path is not wired yet — the framework handles no
+        // operation.
+        assert_eq!(will_do, 0);
+    }
+
+    #[test]
+    fn begin_and_end_io_operation_succeed() {
+        let fixture = Fixture::new();
+        // Safety: `driver_ref` is live; the cycle-info pointer is
+        // not dereferenced by these no-op brackets.
+        unsafe {
+            assert_eq!(
+                begin_io_operation(fixture.driver_ref, 2, 0, 0, 512, core::ptr::null()),
+                OsStatus::OK.as_i32()
+            );
+            assert_eq!(
+                end_io_operation(fixture.driver_ref, 2, 0, 0, 512, core::ptr::null()),
+                OsStatus::OK.as_i32()
+            );
+        }
+    }
+
+    #[test]
+    fn io_timing_entry_points_reject_a_null_driver() {
+        let null = core::ptr::null_mut::<c_void>().cast();
+        let mut scratch = 0u64;
+        let mut scratch_f = 0.0;
+        let mut flag: Boolean = 0;
+        // Safety: null is explicitly handled by every entry point.
+        unsafe {
+            assert_eq!(
+                get_zero_time_stamp(null, 2, 0, &mut scratch_f, &mut scratch, &mut scratch),
+                OsStatus::BAD_OBJECT.as_i32()
+            );
+            assert_eq!(
+                will_do_io_operation(null, 2, 0, 0, &mut flag, &mut flag),
+                OsStatus::BAD_OBJECT.as_i32()
+            );
+            assert_eq!(
+                begin_io_operation(null, 2, 0, 0, 0, core::ptr::null()),
+                OsStatus::BAD_OBJECT.as_i32()
+            );
+            assert_eq!(
+                end_io_operation(null, 2, 0, 0, 0, core::ptr::null()),
+                OsStatus::BAD_OBJECT.as_i32()
             );
         }
     }

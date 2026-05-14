@@ -28,6 +28,7 @@ use crate::dispatch::DeviceState;
 use crate::driver::{AnyDriver, DriverInfo};
 use crate::objects::ObjectMap;
 use crate::raw::abi::{AudioServerPlugInDriverInterface, AudioServerPlugInHostRef};
+use crate::raw::clock::DeviceClock;
 use crate::realtime::Refcount;
 
 /// The framework state behind a [`DriverObject`]'s vtable pointer.
@@ -55,6 +56,9 @@ pub struct DriverRuntime {
     /// property-changed notification path (a later PR); written
     /// once, read never (yet).
     host: AtomicPtr<c_void>,
+    /// The device's synthetic zero-timestamp clock. `StartIO`
+    /// anchors it, `GetZeroTimeStamp` reads it, `StopIO` halts it.
+    clock: DeviceClock,
 }
 
 impl DriverRuntime {
@@ -73,6 +77,7 @@ impl DriverRuntime {
             info,
             state,
             host: AtomicPtr::new(core::ptr::null_mut()),
+            clock: DeviceClock::new(),
         }
     }
 
@@ -117,6 +122,13 @@ impl DriverRuntime {
     #[must_use]
     pub fn host(&self) -> AudioServerPlugInHostRef {
         self.host.load(Ordering::Acquire).cast()
+    }
+
+    /// The device's zero-timestamp clock.
+    #[inline]
+    #[must_use]
+    pub fn clock(&self) -> &DeviceClock {
+        &self.clock
     }
 }
 
