@@ -86,18 +86,36 @@ not relied upon, and the Tier 3 round-trip is the stronger check.
 
 This tier blocks merge. **Wired up: yes** (`tier2.yml`).
 
-### Tier 3 — `hal-load` (merge to `main` and nightly, target < 25 min)
+### Tier 3 — `plugin-load` (merge to `main` and nightly, target < 25 min)
 
 Tier 2 plus:
 
 - `sudo cp -R` the built `.driver` into `/Library/Audio/Plug-Ins/HAL/`
 - `sudo launchctl kill` `coreaudiod` and wait for relaunch
-- `system_profiler SPAudioDataType` confirms the example device is
-  enumerated
+- read `coreaudiod`'s unified log and confirm it **discovers and
+  attempts to load** the plug-in (`HALS_RemotePlugInRegistrar`
+  "Attempting to load" + the Core Audio Driver Service helper
+  "Loading server plug-in com.tympan.aspl.MinimalLoopback")
+
+That proves the `.driver` layout, the `Info.plist`, and the CFPlugIn
+registration are well-formed enough for the HAL to parse and try.
+
+**Finding (2026-05-14): the load does not complete on a hosted
+runner.** The first Tier 3 run showed `coreaudiod` reaching the
+bundle and then macOS AMFI rejecting the plug-in binary —
+`AppleMobileFileIntegrityError -423`, "the file is adhoc signed or
+signed by an unknown certificate chain". macOS 15's out-of-process
+Core Audio Driver Service helper enforces code-signature validity;
+an ad-hoc signature is not accepted, and a GitHub-hosted runner
+cannot produce a Developer ID signature. The original survey's
+premise that "SIP does not prevent loading unsigned HAL plug-ins"
+held for older models but not this one. So Tier 3 on hosted CI
+asserts the *load attempt*, not device enumeration; confirming the
+device actually appears, and exercising the IO path, moves to Tier 4.
 
 An in-process lifecycle harness driving the IO path under an
-`assert_no_alloc` global-allocator guard is a planned addition; the
-HAL-load check above is the headline Tier 3 verification.
+`assert_no_alloc` global-allocator guard remains a planned addition
+and does not depend on the code-signing constraint.
 
 This tier does not block PR merge — `tier3.yml` runs on merges to
 `main`, a daily schedule, and manual dispatch, never on a pull
@@ -107,8 +125,12 @@ request. A failure on `main` is a signal to investigate.
 ### Tier 4 — out of CI scope
 
 Not tested on GitHub-hosted runners; documented in `docs/testing.md`
-(§ Tier 4) as a pre-release manual checklist: audio output to
-physical hardware, microphone capture, long-running stability,
+(§ Tier 4) as a pre-release manual checklist. It now also covers the
+checks the AMFI code-signing constraint pushes out of hosted CI:
+loading a Developer ID-signed `.driver` to completion, confirming
+`system_profiler` enumerates the device, and exercising the IO
+path. Plus the pre-existing Tier 4 items — audio output to physical
+hardware, microphone capture, long-running stability,
 notarization-gated behaviour, third-party application interaction,
 and System Settings UI verification.
 
@@ -122,18 +144,23 @@ Positive:
 - The tier numbering maps cleanly onto the sibling tympan crates'
   conventions, so contributors moving between crates see consistent
   CI semantics.
-- Tier 3's `coreaudiod` HAL-load harness catches the most common
-  regression modes (Info.plist drift, CFPlugIn factory wiring, IO
-  lifecycle ordering) on `main` and nightly without any macOS
-  infrastructure beyond a hosted runner.
+- Tier 3's plug-in-load harness catches the most common
+  bundle-level regression modes (Info.plist drift, CFPlugIn factory
+  wiring, bundle-identifier mismatch) on `main` and nightly without
+  any macOS infrastructure beyond a hosted runner.
 
 Negative:
 
+- Hosted CI cannot run a HAL plug-in to completion: macOS AMFI
+  rejects the ad-hoc signature, so the device-enumeration and
+  IO-path checks land in Tier 4, against a Developer ID-signed
+  bundle. The hand-written `raw` ABI layer is therefore *exercised*
+  only at Tier 4 — Tiers 1–3 prove it compiles, is internally
+  consistent, and is structurally well-formed, but not that
+  `coreaudiod` drives it correctly.
 - Audio-data-path bugs (format negotiation, sample-rate conversion,
   glitching under load) are not caught until manual verification.
 - Notarization-related issues surface only at release-time signing.
-- Until the first `.driver` example builds, Tier 2 is limited to
-  Info.plist linting and Tier 3 is not wired up at all.
 
 ## Trigger for revisiting
 
