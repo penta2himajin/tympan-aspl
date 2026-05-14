@@ -121,33 +121,51 @@ images relevant to AudioServerPlugin development include:
 No additional Apple Developer Program enrolment is required for
 ad-hoc signing.
 
-## System Integrity Protection (SIP) considerations
+## System Integrity Protection (SIP) and AMFI considerations
 
-SIP is active by default on GitHub-hosted runners and cannot be
-disabled (`csrutil disable` requires Recovery Mode). The implications
-for AudioServerPlugin testing:
+GitHub-hosted Apple-silicon runners run in a VM and ship with **SIP
+disabled** — `csrutil status` reports "disabled", and the boot log
+shows `AMFI: Booted in a VM`. This is *not* a useful lever: the
+code-signing gate that stops an unsigned HAL plug-in is **AMFI**,
+which `amfid` enforces independently of SIP. With SIP off the runner
+still rejects an ad-hoc-signed plug-in with
+`AppleMobileFileIntegrityError -423`.
 
 | Operation | Allowed | Notes |
 |---|---|---|
 | Place `.driver` in `/Library/Audio/Plug-Ins/HAL/` | Yes | Requires `sudo`, which runners provide |
 | Restart `coreaudiod` | Yes | Via `launchctl kill` |
 | `coreaudiod` discovers / attempts the plug-in | Yes | It scans the HAL directory and parses the bundle |
-| `coreaudiod` loads an **ad-hoc-signed** plug-in to completion | **No** | AMFI rejects it (`AppleMobileFileIntegrityError -423`) |
-| `coreaudiod` loads a **Developer ID-signed** plug-in | Yes | But CI cannot produce such a signature |
-| Attach `lldb` to `coreaudiod` | No | SIP blocks debugger attachment to system daemons |
-| Modify SIP itself | No | Recovery Mode only |
+| `coreaudiod` loads an **ad-hoc-signed** plug-in to completion | **No** | `amfid` rejects it (`AppleMobileFileIntegrityError -423`); SIP being off does not change this |
+| `coreaudiod` loads a **self-signed** plug-in to completion | **No** | Rejected the same way — even with the certificate installed as a trusted System-keychain root, since `amfid` does not consult that trust store |
+| `coreaudiod` loads a **Developer ID-signed** plug-in | Yes | CI can only do this with the certificate supplied via a GitHub secret |
+| Write `nvram boot-args` (the AMFI `amfi_get_out_of_my_way` knob) | Write succeeds | SIP is off, so the write is accepted — but it only takes effect after a reboot, which a hosted runner cannot perform mid-job |
+| Modify SIP itself | N/A | Already disabled on the runner |
 
-Key observation: **macOS AMFI does prevent *completing* the load of
-an ad-hoc-signed HAL plug-in.** On macOS 15 the out-of-process Core
-Audio Driver Service helper enforces code-signature validity; an
-ad-hoc signature is rejected with `AppleMobileFileIntegrityError
--423`. `coreaudiod` still discovers the bundle and *attempts* the
+Key observation: **AMFI prevents *completing* the load of any
+plug-in whose signature does not chain to an Apple-issued
+certificate.** On macOS 15 the out-of-process Core Audio Driver
+Service helper hands the binary to `amfid`, which rejects an ad-hoc
+*or* self-signed signature with `AppleMobileFileIntegrityError -423`
+("the file is adhoc signed or signed by an unknown certificate
+chain"). `coreaudiod` still discovers the bundle and *attempts* the
 load — which is what hosted Tier 3 verifies — but the device does
-not enumerate. Running the plug-in to completion needs a Developer
-ID signature, which a GitHub-hosted runner cannot produce; that is a
-Tier 4 (self-hosted / manual) check. (This corrects the project's
-original survey, which assumed unsigned HAL plug-ins load freely —
-true for older models, not for the macOS 15 driver-service helper.)
+not enumerate.
+
+This was confirmed empirically on a `macos-15` runner: ad-hoc
+signing, a self-signed certificate, that certificate installed as a
+trusted root in the System keychain, and `DisableLibraryValidation`
+were all tried — alone and combined — and every case stopped at
+`-423`. (`security add-trusted-cert` satisfies `codesign --verify`
+and `spctl`, but `amfid` logs `taskgated-helper: ... no eligible
+provisioning profiles found` and still refuses: its trust path is
+Apple-issued certificates, not the System keychain.) Running a
+plug-in to completion therefore needs a Developer ID-signed bundle —
+supplied to CI via a GitHub secret — and is a Tier 4 check until
+that secret exists. (This corrects the project's original survey,
+which assumed unsigned HAL plug-ins load freely: true for older
+models, not for the macOS 15 driver-service helper, and not
+unlocked by disabling SIP.)
 
 ## What cannot be verified on GitHub-hosted runners
 

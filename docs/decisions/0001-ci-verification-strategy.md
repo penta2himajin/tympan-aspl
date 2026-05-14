@@ -22,9 +22,11 @@ CI scoping:
   `codesign`, `plutil`, `nm`, `otool`, `system_profiler`,
   `launchctl`. Public repositories receive unlimited free minutes on
   standard runners.
-- **SIP does not prevent loading unsigned HAL plug-ins.** It blocks
-  debugger attachment to `coreaudiod`. Tier 3 HAL-load verification
-  therefore works on stock runners; deep debugging does not.
+- **SIP is disabled on GitHub-hosted Apple-silicon runners** (they
+  run in a VM), but that does not unlock loading an unsigned HAL
+  plug-in: the code-signing gate is AMFI, which `amfid` enforces
+  independently of SIP. See the Tier 3 finding below — the project's
+  original survey was wrong on this point.
 - **The cross-platform layers compile and test on any host.** The
   `realtime`, `error`, `format`, `property`, and `bundle` modules
   contain no `cfg(target_os = "macos")` code, so their invariants
@@ -108,10 +110,26 @@ signed by an unknown certificate chain". macOS 15's out-of-process
 Core Audio Driver Service helper enforces code-signature validity;
 an ad-hoc signature is not accepted, and a GitHub-hosted runner
 cannot produce a Developer ID signature. The original survey's
-premise that "SIP does not prevent loading unsigned HAL plug-ins"
-held for older models but not this one. So Tier 3 on hosted CI
+premise — that an unsigned HAL plug-in loads freely and SIP is the
+only relevant gate — was wrong: AMFI is the gate, and it rejects
+ad-hoc signatures regardless of SIP state. So Tier 3 on hosted CI
 asserts the *load attempt*, not device enumeration; confirming the
 device actually appears, and exercising the IO path, moves to Tier 4.
+
+**Follow-up (2026-05-14): no runner-applicable bypass exists.** A
+dedicated experiment on a `macos-15` runner tried ad-hoc signing, a
+self-signed certificate, that certificate installed as a trusted
+root in the System keychain, and `DisableLibraryValidation` — alone
+and combined. Every case stopped at `amfid` `-423`; the device
+never enumerated. SIP is in fact already *disabled* on the runner
+and that changes nothing. `security add-trusted-cert` satisfies
+`codesign --verify` and `spctl`, but `amfid` does not consult the
+System keychain — it logs `taskgated-helper: ... no eligible
+provisioning profiles found` and still refuses. The `nvram`
+`boot-args` AMFI knob is writable (SIP is off) but needs a reboot
+the hosted runner cannot perform mid-job. The only way to exercise
+a full load on hosted CI is a Developer ID-signed bundle supplied
+via a GitHub secret.
 
 An in-process lifecycle harness driving the IO path under an
 `assert_no_alloc` global-allocator guard remains a planned addition
@@ -169,6 +187,10 @@ Re-evaluate when any of the following holds:
 - A self-hosted Mac runner with a virtual audio device becomes part
   of the project's CI budget — at that point Tier 4 audio-I/O
   verification is promoted into a workflow.
+- A Developer ID certificate is added to the repository's GitHub
+  secrets — at that point the device-enumeration check can move from
+  Tier 4 back into hosted Tier 3, signing the `.driver` with the
+  secret instead of an ad-hoc signature.
 - A bug ships that would have been caught by `coreaudiod`-level
   loading but was not caught by the Tier 3 harness.
 - Apple ships a first-party AudioServerPlugin test host; if that
