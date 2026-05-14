@@ -54,7 +54,8 @@ conditions.
 | Doc | Content |
 |---|---|
 | [`docs/overview.md`](docs/overview.md) | Project purpose, scope, comparison to existing implementations |
-| [`docs/architecture.md`](docs/architecture.md) | Planned API design and module layout |
+| [`docs/architecture.md`](docs/architecture.md) | API design and module layout |
+| [`docs/plugin-author-guide.md`](docs/plugin-author-guide.md) | Writing a driver: setup, identity, the realtime path, packaging, pitfalls |
 | [`docs/testing.md`](docs/testing.md) | Testing and CI strategy across tiers |
 | [`docs/references.md`](docs/references.md) | Apple documentation, prior art, related crates |
 | [`docs/handoff-protocol.md`](docs/handoff-protocol.md) | Session handoff protocol for long-running work |

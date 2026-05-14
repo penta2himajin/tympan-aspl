@@ -52,7 +52,8 @@ API 設計は [`docs/ja/architecture.md`](docs/ja/architecture.md) を参照し�
 | ドキュメント | 内容 |
 |---|---|
 | [`docs/ja/overview.md`](docs/ja/overview.md) | プロジェクトの目的、スコープ、既存実装との比較 |
-| [`docs/ja/architecture.md`](docs/ja/architecture.md) | 計画中の API 設計とモジュール構成 |
+| [`docs/ja/architecture.md`](docs/ja/architecture.md) | API 設計とモジュール構成 |
+| [`docs/ja/plugin-author-guide.md`](docs/ja/plugin-author-guide.md) | ドライバの書き方: セットアップ、同一性、リアルタイム経路、パッケージング、落とし穴 |
 | [`docs/ja/testing.md`](docs/ja/testing.md) | 階層化されたテストおよび CI 戦略 |
 | [`docs/ja/references.md`](docs/ja/references.md) | Apple のドキュメント、先行実装、関連クレート |
 | [`docs/ja/handoff-protocol.md`](docs/ja/handoff-protocol.md) | 長期作業のためのセッション引き継ぎプロトコル |
