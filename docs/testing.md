@@ -226,7 +226,17 @@ lands.
 
 ## Implementation status
 
-CI is not yet configured. Implementation is planned at the same time
-as the first source code is committed. The initial CI configuration
-will cover tiers 1 and 2; tier 3 will be added once the first example
-plugin is buildable; tier 4 remains manual indefinitely.
+Tiers 1, 2, and 3 are wired up:
+
+- `tier1.yml` — build, test, `clippy`, `fmt`, `doc`, `cargo deny`,
+  and a no-`static mut` grep, on every pull request.
+- `tier2.yml` — `plutil -lint` of the committed and generated
+  Info.plists, the example `.driver` cdylib build, an `nm` factory-
+  symbol check, `lipo -info`, and `.driver` bundle assembly + ad-hoc
+  `codesign`, on every pull request.
+- `tier3.yml` — `coreaudiod` HAL-load verification: install the
+  `.driver`, restart `coreaudiod`, confirm `system_profiler` lists
+  the virtual device. Runs on merges to `main`, a daily schedule,
+  and manual dispatch — never on a pull request — per ADR 0001.
+
+Tier 4 remains a manual, pre-release checklist.

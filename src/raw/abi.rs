@@ -6,11 +6,14 @@
 //! `<CoreAudio/CoreAudioBaseTypes.h>`. They are hand-written rather
 //! than taken from `coreaudio-sys` for one reason: the rest of the
 //! framework is cross-platform and unit-tested on any host, and a
-//! hand-written `#[repr(C)]` definition compiles everywhere. The
-//! macOS FFI layer (a later PR) cross-checks every struct here
-//! against the `coreaudio-sys` bindings with
-//! `static_assertions::assert_eq_size!`, so a layout drift fails
-//! the build rather than corrupting memory at runtime.
+//! hand-written `#[repr(C)]` definition compiles everywhere.
+//!
+//! Two checks guard the layouts against drift. The
+//! `static_assertions` in this module's tests pin every struct's
+//! size, alignment, and shape for internal consistency. And Tier 3
+//! CI proves them against the real C ABI end to end: a plug-in
+//! whose vtable or struct layout is wrong does not enumerate when
+//! `coreaudiod` loads it.
 //!
 //! Nothing in this module is `unsafe` or platform-specific — it is
 //! plain data declarations. The `unsafe` work of populating a
