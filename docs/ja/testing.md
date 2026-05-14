@@ -231,6 +231,7 @@ Tier 4 検証を自動化する必要がある場合の選択肢は以下のと�
 ├── tier1.yml           # 全 PR で cargo build/test/clippy/fmt/doc
 ├── tier2.yml           # 全 PR でバンドルおよび ABI 検証
 ├── tier3.yml           # main へのマージおよび毎日で HAL ロード検証
+├── tier3-asan.yml      # インプロセスのハーネスを AddressSanitizer 下で毎日実行
 └── release.yml         # タグ付きリリース公開 (cargo publish dry-run) — 予定
 ```
 
@@ -275,6 +276,11 @@ Tier 1・2・3 が配線済みです。
   バイナリを拒否するためです（上記 SIP セクション参照）。ADR 0001 に
   従い、`main` へのマージ・毎日のスケジュール・手動ディスパッチで
   実行し、プルリクエストでは実行しません。
+- `tier3-asan.yml` — インプロセスのハーネス（`raw_lifecycle`、
+  `realtime_safety`）と `raw` モジュールのユニットテストを
+  `-Zsanitizer=address` 下で再実行し、手書き FFI 層での
+  use-after-free・double-free・範囲外アクセスを検出します。毎日および
+  手動ディスパッチで実行。`tier3.yml` と同じく非ブロッキングです。
 
 Tier 4 はリリース前の手動チェックリストのままで、AMFI のコード署名
 制約がホスト CI から押し出すチェック — Developer ID 署名済み

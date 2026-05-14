@@ -139,6 +139,16 @@ without depending on the code-signing constraint:
 `AudioServerPlugInDriverInterface` vtable — the factory, the entry
 points, and the `DoIOOperation` data path `coreaudiod` would call.
 
+An AddressSanitizer companion, `tier3-asan.yml`, re-runs those two
+harnesses and the `raw`-module unit tests under
+`-Zsanitizer=address` on a nightly schedule. `coreaudiod`'s own
+HAL-load cannot be sanitized — it is a separate process — but the
+in-process FFI exercise can be, and ASan is where a use-after-free,
+double-free, or out-of-bounds access in the hand-written `raw`
+layer's `Box` / refcount / ring lifecycle would surface. It shares
+Tier 3's non-blocking, scheduled discipline. **Wired up: yes**
+(`tier3-asan.yml`).
+
 This tier does not block PR merge — `tier3.yml` runs on merges to
 `main`, a daily schedule, and manual dispatch, never on a pull
 request. A failure on `main` is a signal to investigate.

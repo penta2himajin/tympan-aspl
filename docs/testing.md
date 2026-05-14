@@ -230,6 +230,7 @@ The `.github/workflows/` layout (`tier1`–`tier3` are present;
 ├── tier1.yml           # cargo build/test/clippy/fmt/doc on every PR
 ├── tier2.yml           # bundle and ABI verification on every PR
 ├── tier3.yml           # HAL load verification on merge to main + nightly
+├── tier3-asan.yml      # in-process harnesses under AddressSanitizer, nightly
 └── release.yml         # Tagged release publishing (cargo publish dry-run) — planned
 ```
 
@@ -274,6 +275,11 @@ Tiers 1, 2, and 3 are wired up:
   ad-hoc-signed binary on a hosted runner (see the SIP section
   above). Runs on merges to `main`, a daily schedule, and manual
   dispatch — never on a pull request — per ADR 0001.
+- `tier3-asan.yml` — the in-process harnesses (`raw_lifecycle`,
+  `realtime_safety`) and the `raw`-module unit tests re-run under
+  `-Zsanitizer=address` to catch use-after-free / double-free /
+  out-of-bounds in the hand-written FFI layer. Nightly and on
+  manual dispatch; non-blocking, like `tier3.yml`.
 
 Tier 4 remains a manual, pre-release checklist — and now also owns
 the checks the AMFI code-signing constraint pushes out of hosted
