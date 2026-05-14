@@ -180,21 +180,20 @@ impl Property for MyCustomProperty {
 
 ## 未解決の問い
 
-形式的な結論を出さないまま実装に持ち越された設計上の問いです。
-コードは暫定的な答えを反映していますが (例: `dyn AnyDriver` 経路と
-ジェネリックな `DriverInstance<D>` の双方が存在し、`RealtimeContext`
-は単一マーカ)、まだ `docs/decisions/` の ADR には反映されていません。
+実装に持ち越された問いの大半は、その後決着し `docs/decisions/` の
+ADR に記録されました。コードの暫定的な答えが、いまや文書化された
+答えです。
 
-- [ ] `Driver` をオブジェクト安全なトレイトにすべきか (動的ディスパッチ
-  を許容する)、それとも汎用パラメータにすべきか (ゼロコストな特殊化を
-  許容する)?
-- [ ] `RealtimeContext` の区別はどの程度の粒度で行うべきか? 単一マーカ
-  か、`PropertyContext`、`BoundaryContext` などを別途設けるか?
-- [ ] サポートする macOS の最低バージョンは? AudioServerPlugin は macOS
-  10.10 で大きく成熟し、12.0 でさらに成熟しました。
-- [ ] フレームワークは AudioDriverKit (macOS 11 以降の DriverKit ベース
-  ドライバ) とどう相互作用するか? コード経路を分けるか、統一 API とする
-  か?
-
-`docs/decisions/` は作成済みです。これらの暫定的な答えを ADR に
-昇格させる作業はフォローアップとして追跡されます。
+- [x] `Driver` をオブジェクト安全なトレイトにすべきか、それとも汎用
+  パラメータにすべきか? — 汎用とし、FFI 境界で一度だけ
+  `dyn AnyDriver` へ型消去する。
+  [ADR 0002](../decisions/0002-driver-trait-type-erasure.md) を参照。
+- [x] `RealtimeContext` の区別はどの程度の粒度で行うべきか? — 単一
+  マーカとする。
+  [ADR 0003](../decisions/0003-single-realtime-context.md) を参照。
+- [ ] サポートする macOS の最低バージョンは? AudioServerPlugin は
+  macOS 10.10 で大きく成熟し、12.0 でさらに成熟しました。未解決 —
+  CI は `macos-15` で動作しており、下限はまだ確約されていません。
+- [x] フレームワークは AudioDriverKit (macOS 11 以降の DriverKit
+  ベースドライバ) とどう相互作用するか? — スコープ外とする。
+  [ADR 0004](../decisions/0004-audiodriverkit-out-of-scope.md) を参照。

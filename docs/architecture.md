@@ -179,20 +179,21 @@ forwards entries to the standard `log` crate.
 
 ## Open questions
 
-Carried into implementation without formal resolution. The code
-reflects provisional answers (e.g. both a `dyn AnyDriver` path and a
-generic `DriverInstance<D>` exist; `RealtimeContext` is a single
-marker), but these are not yet captured as ADRs under
-`docs/decisions/`:
+Most of the questions carried into implementation have since been
+settled and recorded as ADRs under `docs/decisions/`; the code's
+provisional answers are now the documented ones:
 
-- [ ] Should `Driver` be an object-safe trait (allowing dynamic dispatch)
-  or a generic parameter (allowing zero-cost specialisation)?
-- [ ] How granular should the `RealtimeContext` distinction be? A single
-  marker, or also a separate `PropertyContext`, `BoundaryContext`, etc.?
+- [x] Should `Driver` be an object-safe trait or a generic
+  parameter? — generic, erased once to `dyn AnyDriver` at the FFI
+  boundary; see
+  [ADR 0002](decisions/0002-driver-trait-type-erasure.md).
+- [x] How granular should the `RealtimeContext` distinction be? — a
+  single marker; see
+  [ADR 0003](decisions/0003-single-realtime-context.md).
 - [ ] What is the minimum macOS version supported? AudioServerPlugin
-  matured significantly in macOS 10.10 and again in 12.0.
-- [ ] How does the framework interact with AudioDriverKit (DriverKit-based
-  drivers in macOS 11+)? Two separate code paths, or a unified API?
-
-`docs/decisions/` now exists; promoting these provisional answers to
-ADRs is tracked as follow-up work.
+  matured significantly in macOS 10.10 and again in 12.0. Still
+  open — CI runs on `macos-15` and no lower bound has been committed
+  to.
+- [x] How does the framework interact with AudioDriverKit
+  (DriverKit-based drivers in macOS 11+)? — out of scope; see
+  [ADR 0004](decisions/0004-audiodriverkit-out-of-scope.md).
