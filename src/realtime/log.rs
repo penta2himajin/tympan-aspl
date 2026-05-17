@@ -151,6 +151,14 @@ impl<T: Send + 'static> Drop for LogSink<T> {
     }
 }
 
+// The drainer worker runs on a dedicated, non-realtime background
+// thread spawned by `LogSink`. By construction it is *not* on the
+// audio engine's realtime thread — its job is to drain the ring on
+// behalf of the realtime producer, off the audio thread. So
+// `thread::sleep` here is the natural backoff between polls, and
+// the realtime-path lints (which target the audio thread) do not
+// apply to it.
+#[allow(clippy::disallowed_methods)]
 fn drainer_loop<T, F>(rx: &Consumer<T>, shutdown: &AtomicBool, drain_one: &mut F)
 where
     T: Send + 'static,
@@ -181,6 +189,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    // Tests legitimately need to verify the realtime drainer's
+    // contract from a non-realtime test thread: a `Mutex` collects
+    // drained events for assertion, and `thread::sleep` gives the
+    // drainer time to make progress. Both are forbidden in the
+    // realtime path itself (this module's outer
+    // `#![deny(clippy::disallowed_methods, clippy::disallowed_types)]`)
+    // but are the natural test-harness primitives here.
+    #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
     use super::*;
     use std::sync::Mutex;
 
