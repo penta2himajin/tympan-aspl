@@ -4,16 +4,16 @@ members = ["examples/minimal-loopback", "examples/gain", "examples/lowpass"]
 
 [package]
 name = "tympan-aspl"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/penta2himajin/tympan-aspl"
+documentation = "https://docs.rs/tympan-aspl"
 description = "Rust framework for macOS AudioServerPlugins"
 readme = "README.md"
 keywords = ["audio", "macos", "coreaudio", "audioserverplugin", "realtime"]
 categories = ["multimedia::audio", "os::macos-apis"]
-publish = false
 
 # Library-only artefact. `plugin_entry!` emits the
 # `#[no_mangle] extern "C"` CFPlugIn factory from the consuming

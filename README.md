@@ -125,7 +125,7 @@ edition = "2021"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-tympan-aspl = { git = "https://github.com/penta2himajin/tympan-aspl" }
+tympan-aspl = "0.1"
 ```
 
 ```rust
