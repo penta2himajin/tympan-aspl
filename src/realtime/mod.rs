@@ -28,6 +28,21 @@
 //!   ring buffer.
 //! - [`log`] — a bounded realtime log sink with an off-thread
 //!   drainer, built on the ring.
+//!
+//! ## Lint enforcement
+//!
+//! The realtime module re-enables the project's
+//! `clippy::disallowed_types` and `clippy::disallowed_methods`
+//! lints at `deny`. Those lists (`clippy.toml`) name the blocking
+//! and kernel-traversing items that have no business in a realtime
+//! path — `Mutex`, `Condvar`, `thread::sleep`, `File::open`, the
+//! `std::sync::mpsc` channels, and so on — so the realtime
+//! sub-tree cannot mention any of them even by accident. The lints
+//! are `allow` everywhere else in the crate because non-realtime
+//! code paths (initialisation, bundle generation, tests) use those
+//! items legitimately.
+
+#![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 mod context;
 pub mod log;

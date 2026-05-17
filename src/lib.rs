@@ -52,6 +52,17 @@
 //! [`DeviceSpec`], and — on macOS — exposes the type as a CFPlugIn
 //! with the [`plugin_entry!`] macro.
 
+// Crate-wide policy for the realtime-safety lints declared in
+// `clippy.toml`. The `disallowed-types` and `disallowed-methods`
+// lists target items that have no business in a realtime path —
+// blocking syncs, kernel syscalls, sleeping primitives — and the
+// rest of the crate (initialisation paths, bundle generation,
+// tests, non-realtime support code) is free to use them. The
+// `realtime` module re-enables the lints at `deny` in its own
+// `mod.rs`, so the strict allow-list applies exactly where the
+// realtime invariants live.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 pub mod bundle;
 pub mod device;
 pub mod dispatch;
